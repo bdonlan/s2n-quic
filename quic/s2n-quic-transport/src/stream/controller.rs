@@ -27,15 +27,6 @@ use s2n_quic_core::{
 
 pub use remote_initiated::MAX_STREAMS_SYNC_FRACTION;
 
-enum StreamDirection {
-    // A stream that both transmits and receives data
-    Bidirectional,
-    // A stream that transmits data (unidirectional)
-    Outgoing,
-    // A stream that receives data (unidirectional)
-    Incoming,
-}
-
 /// This component manages stream concurrency limits.
 ///
 /// It enforces both the local initiated stream limits and the peer initiated
@@ -45,7 +36,8 @@ enum StreamDirection {
 #[derive(Debug)]
 pub struct Controller {
     local_endpoint_type: endpoint::Type,
-    bidi_controller: ControllerPair,
+    local_bidi_controller: LocalInitiated,
+    remote_bidi_controller: RemoteInitiated,
     local_uni_controller: LocalInitiated,
     remote_uni_controller: RemoteInitiated,
 }
@@ -70,14 +62,11 @@ impl Controller {
     ) -> Self {
         Self {
             local_endpoint_type,
-            bidi_controller: ControllerPair {
-                stream_id: StreamId::initial(local_endpoint_type, StreamType::Bidirectional),
-                local_initiated: LocalInitiated::new(
-                    initial_peer_limits.max_streams_bidi,
-                    initial_local_limits.max_streams_bidi,
-                ),
-                remote_initiated: RemoteInitiated::new(initial_local_limits.max_streams_bidi),
-            },
+            local_bidi_controller: LocalInitiated::new(
+                initial_peer_limits.max_streams_bidi,
+                initial_local_limits.max_streams_bidi,
+            ),
+            remote_bidi_controller: RemoteInitiated::new(initial_local_limits.max_streams_bidi),
             local_uni_controller: LocalInitiated::new(
                 initial_peer_limits.max_streams_uni,
                 stream_limits
@@ -92,7 +81,7 @@ impl Controller {
     /// which signals an increase in the available streams budget.
     pub fn on_max_streams(&mut self, frame: &MaxStreams) {
         match frame.stream_type {
-            StreamType::Bidirectional => self.bidi_controller.local_initiated.on_max_streams(frame),
+            StreamType::Bidirectional => self.local_bidi_controller.on_max_streams(frame),
             StreamType::Unidirectional => self.local_uni_controller.on_max_streams(frame),
         }
     }
@@ -111,8 +100,7 @@ impl Controller {
     ) -> Poll<()> {
         match stream_type {
             StreamType::Bidirectional => self
-                .bidi_controller
-                .local_initiated
+                .local_bidi_controller
                 .poll_open_stream(&mut open_tokens.bidirectional, context),
             StreamType::Unidirectional => self
                 .local_uni_controller
@@ -126,10 +114,9 @@ impl Controller {
     /// that were communicated by transport parameters or MAX_STREAMS frames.
     pub fn on_remote_open_stream(&mut self, stream_id: StreamId) -> Result<(), transport::Error> {
         match stream_id.stream_type() {
-            StreamType::Bidirectional => self
-                .bidi_controller
-                .remote_initiated
-                .on_remote_open_stream(stream_id),
+            StreamType::Bidirectional => {
+                self.remote_bidi_controller.on_remote_open_stream(stream_id)
+            }
             StreamType::Unidirectional => {
                 self.remote_uni_controller.on_remote_open_stream(stream_id)
             }
@@ -139,39 +126,60 @@ impl Controller {
     /// This method is called whenever a stream is opened, regardless of which side initiated.
     pub fn on_open_stream(&mut self, stream_id: StreamId) {
         match self.direction(stream_id) {
-            StreamDirection::Bidirectional => self.bidi_controller.on_open_stream(),
-            StreamDirection::Outgoing => self.local_uni_controller.on_open_stream(),
-            StreamDirection::Incoming => self.remote_uni_controller.on_open_stream(),
+            StreamDirection::LocalInitiatedBidirectional => {
+                self.local_bidi_controller.on_open_stream()
+            }
+            StreamDirection::RemoteInitiatedBidirectional => {
+                self.remote_bidi_controller.on_open_stream()
+            }
+            StreamDirection::LocalInitiatedUnidirectional => {
+                self.local_uni_controller.on_open_stream()
+            }
+            StreamDirection::RemoteInitiatedUnidirectional => {
+                self.remote_uni_controller.on_open_stream()
+            }
         }
     }
 
     /// This method is called whenever a stream is closed.
     pub fn on_close_stream(&mut self, stream_id: StreamId) {
         match self.direction(stream_id) {
-            StreamDirection::Bidirectional => self.bidi_controller.on_close_stream(),
-            StreamDirection::Outgoing => self.local_uni_controller.on_close_stream(),
-            StreamDirection::Incoming => self.remote_uni_controller.on_close_stream(),
+            StreamDirection::LocalInitiatedBidirectional => {
+                self.local_bidi_controller.on_close_stream()
+            }
+            StreamDirection::RemoteInitiatedBidirectional => {
+                self.remote_bidi_controller.on_close_stream()
+            }
+            StreamDirection::LocalInitiatedUnidirectional => {
+                self.local_uni_controller.on_close_stream()
+            }
+            StreamDirection::RemoteInitiatedUnidirectional => {
+                self.remote_uni_controller.on_close_stream()
+            }
         }
     }
 
     /// This method is called when the stream manager is closed. All wakers will be woken
     /// to unblock waiting tasks.
     pub fn close(&mut self) {
-        self.bidi_controller.close();
+        self.local_bidi_controller.close();
+        self.remote_bidi_controller.close();
         self.local_uni_controller.close();
         self.remote_uni_controller.close();
     }
 
     /// This method is called when a packet delivery got acknowledged
     pub fn on_packet_ack<A: ack::Set>(&mut self, ack_set: &A) {
-        self.bidi_controller.on_packet_ack(ack_set);
+        self.local_bidi_controller.on_packet_ack(ack_set);
+        self.remote_bidi_controller.on_packet_ack(ack_set);
         self.local_uni_controller.on_packet_ack(ack_set);
         self.remote_uni_controller.on_packet_ack(ack_set);
     }
 
     /// This method is called when a packet loss is reported
     pub fn on_packet_loss<A: ack::Set>(&mut self, ack_set: &A) {
-        self.bidi_controller.on_packet_loss(ack_set);
+        self.local_bidi_controller.on_packet_loss(ack_set);
+        self.remote_bidi_controller.on_packet_loss(ack_set);
         self.local_uni_controller.on_packet_loss(ack_set);
         self.remote_uni_controller.on_packet_loss(ack_set);
     }
@@ -179,8 +187,7 @@ impl Controller {
     /// Updates the period at which `STREAMS_BLOCKED` frames are sent to the peer
     /// if the application is blocked by peer limits.
     pub fn update_blocked_sync_period(&mut self, blocked_sync_period: Duration) {
-        self.bidi_controller
-            .local_initiated
+        self.local_bidi_controller
             .update_sync_period(blocked_sync_period);
         self.local_uni_controller
             .update_sync_period(blocked_sync_period);
@@ -193,8 +200,12 @@ impl Controller {
             return Ok(());
         }
 
-        self.bidi_controller.on_transmit(context)?;
-        // self.uni_controller.on_transmit(context)?;
+        // Only the stream_type from the StreamId is transmitted
+        let stream_id = StreamId::initial(self.local_endpoint_type, StreamType::Bidirectional);
+        self.local_bidi_controller.on_transmit(stream_id, context)?;
+        self.remote_bidi_controller
+            .on_transmit(stream_id, context)?;
+
         // Only the stream_type from the StreamId is transmitted
         let stream_id = StreamId::initial(self.local_endpoint_type, StreamType::Unidirectional);
         self.remote_uni_controller.on_transmit(stream_id, context)?;
@@ -205,17 +216,17 @@ impl Controller {
 
     /// Called when the connection timer expires
     pub fn on_timeout(&mut self, now: Timestamp) {
-        self.bidi_controller.on_timeout(now);
+        self.local_bidi_controller.on_timeout(now);
         self.local_uni_controller.on_timeout(now);
     }
 
     fn direction(&self, stream_id: StreamId) -> StreamDirection {
-        match stream_id.stream_type() {
-            StreamType::Bidirectional => StreamDirection::Bidirectional,
-            StreamType::Unidirectional if stream_id.initiator() == self.local_endpoint_type => {
-                StreamDirection::Outgoing
-            }
-            StreamType::Unidirectional => StreamDirection::Incoming,
+        let is_local_initiated = self.local_endpoint_type == stream_id.initiator();
+        match (is_local_initiated, stream_id.stream_type()) {
+            (true, StreamType::Bidirectional) => StreamDirection::LocalInitiatedBidirectional,
+            (true, StreamType::Unidirectional) => StreamDirection::LocalInitiatedUnidirectional,
+            (false, StreamType::Bidirectional) => StreamDirection::RemoteInitiatedBidirectional,
+            (false, StreamType::Unidirectional) => StreamDirection::RemoteInitiatedUnidirectional,
         }
     }
 }
@@ -223,7 +234,7 @@ impl Controller {
 impl timer::Provider for Controller {
     #[inline]
     fn timers<Q: timer::Query>(&self, query: &mut Q) -> timer::Result {
-        self.bidi_controller.timers(query)?;
+        self.local_bidi_controller.timers(query)?;
         self.local_uni_controller.timers(query)?;
         Ok(())
     }
@@ -236,86 +247,19 @@ impl transmission::interest::Provider for Controller {
         &self,
         query: &mut Q,
     ) -> transmission::interest::Result {
-        self.bidi_controller.transmission_interest(query)?;
-        self.remote_uni_controller.transmission_interest(query)?;
+        self.local_bidi_controller.transmission_interest(query)?;
+        self.remote_bidi_controller.transmission_interest(query)?;
         self.local_uni_controller.transmission_interest(query)?;
+        self.remote_uni_controller.transmission_interest(query)?;
         Ok(())
     }
 }
 
-/// The controller pair consists of both local_initiated and remote_initiated
-/// controllers that are both notified when a stream is opened, regardless
-/// of which side initiated the stream.
-#[derive(Debug)]
-struct ControllerPair {
-    stream_id: StreamId,
-    local_initiated: LocalInitiated,
-    remote_initiated: RemoteInitiated,
-}
-
-impl ControllerPair {
-    #[inline]
-    fn on_open_stream(&mut self) {
-        self.local_initiated.on_open_stream();
-        self.remote_initiated.on_open_stream();
-    }
-
-    #[inline]
-    fn on_close_stream(&mut self) {
-        self.local_initiated.on_close_stream();
-        self.remote_initiated.on_close_stream();
-    }
-
-    #[inline]
-    pub fn on_packet_ack<A: ack::Set>(&mut self, ack_set: &A) {
-        self.remote_initiated.on_packet_ack(ack_set);
-        self.local_initiated.on_packet_ack(ack_set);
-    }
-
-    #[inline]
-    pub fn on_packet_loss<A: ack::Set>(&mut self, ack_set: &A) {
-        self.remote_initiated.on_packet_loss(ack_set);
-        self.local_initiated.on_packet_loss(ack_set);
-    }
-
-    #[inline]
-    pub fn on_timeout(&mut self, now: Timestamp) {
-        self.local_initiated.on_timeout(now);
-    }
-
-    #[inline]
-    pub fn on_transmit<W: WriteContext>(&mut self, context: &mut W) -> Result<(), OnTransmitError> {
-        // Only the stream_type from the StreamId is transmitted
-        self.remote_initiated.on_transmit(self.stream_id, context)?;
-        self.local_initiated.on_transmit(self.stream_id, context)
-    }
-
-    /// This method is called when the stream manager is closed. All wakers will be woken
-    /// to unblock waiting tasks.
-    pub fn close(&mut self) {
-        self.local_initiated.close();
-        self.remote_initiated.close();
-    }
-}
-
-impl timer::Provider for ControllerPair {
-    #[inline]
-    fn timers<Q: timer::Query>(&self, query: &mut Q) -> timer::Result {
-        self.local_initiated.timers(query)?;
-        Ok(())
-    }
-}
-
-impl transmission::interest::Provider for ControllerPair {
-    #[inline]
-    fn transmission_interest<Q: transmission::interest::Query>(
-        &self,
-        query: &mut Q,
-    ) -> transmission::interest::Result {
-        self.remote_initiated.transmission_interest(query)?;
-        self.local_initiated.transmission_interest(query)?;
-        Ok(())
-    }
+enum StreamDirection {
+    LocalInitiatedBidirectional,
+    RemoteInitiatedBidirectional,
+    LocalInitiatedUnidirectional,
+    RemoteInitiatedUnidirectional,
 }
 
 #[cfg(test)]
@@ -324,19 +268,16 @@ mod tests {
     use s2n_quic_core::varint::VarInt;
 
     impl Controller {
-        pub fn available_outgoing_stream_capacity(&self, stream_type: StreamType) -> VarInt {
+        pub fn available_local_stream_capacity(&self, stream_type: StreamType) -> VarInt {
             match stream_type {
-                StreamType::Bidirectional => self
-                    .bidi_controller
-                    .local_initiated
-                    .available_stream_capacity(),
+                StreamType::Bidirectional => self.local_bidi_controller.available_stream_capacity(),
                 StreamType::Unidirectional => self.local_uni_controller.available_stream_capacity(),
             }
         }
 
         pub fn max_streams_latest_value(&self, stream_type: StreamType) -> VarInt {
             match stream_type {
-                StreamType::Bidirectional => self.bidi_controller.remote_initiated.latest_limit(),
+                StreamType::Bidirectional => self.remote_bidi_controller.latest_limit(),
                 StreamType::Unidirectional => self.remote_uni_controller.latest_limit(),
             }
         }

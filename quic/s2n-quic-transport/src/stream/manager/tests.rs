@@ -689,7 +689,7 @@ fn max_streams_replenishes_stream_control_capacity() {
             assert_eq!(
                 *additional_streams,
                 manager.with_stream_controller(
-                    |ctrl| ctrl.available_outgoing_stream_capacity(stream_type)
+                    |ctrl| ctrl.available_local_stream_capacity(stream_type)
                 )
             );
         }
@@ -1197,7 +1197,7 @@ fn blocked_on_local_concurrent_stream_limit() {
             .is_ok());
 
         let available_outgoing_stream_capacity = manager
-            .with_stream_controller(|ctrl| ctrl.available_outgoing_stream_capacity(stream_type));
+            .with_stream_controller(|ctrl| ctrl.available_local_stream_capacity(stream_type));
 
         assert!(available_outgoing_stream_capacity < VarInt::from_u32(100_000));
 
@@ -1250,48 +1250,48 @@ fn asymmetric_stream_limits() {
     let mut initial_local_limits = create_default_initial_flow_control_limits();
     let mut initial_peer_limits = create_default_initial_flow_control_limits();
 
-    let limits = ConnectionLimits::default()
-        .with_max_send_buffer_size(4096)
-        .unwrap()
-        .with_max_open_local_unidirectional_streams(256)
-        .unwrap();
+    for local_limit in 0..101 {
+        for peer_limit in 0..101 {
+            for stream_type in [StreamType::Bidirectional, StreamType::Unidirectional] {
+                let limits = ConnectionLimits::default()
+                    .with_max_open_local_unidirectional_streams(local_limit as u64)
+                    .unwrap();
 
-    for (local_limit, peer_limit) in &[(100, 5), (5, 100)] {
-        for stream_type in [StreamType::Bidirectional, StreamType::Unidirectional] {
-            initial_local_limits.max_streams_bidi = VarInt::from_u8(*local_limit);
-            initial_peer_limits.max_streams_bidi = VarInt::from_u8(*peer_limit);
-            initial_local_limits.max_streams_uni = VarInt::from_u8(*local_limit);
-            initial_peer_limits.max_streams_uni = VarInt::from_u8(*peer_limit);
+                initial_local_limits.max_streams_bidi = VarInt::from_u16(local_limit);
+                initial_peer_limits.max_streams_bidi = VarInt::from_u16(peer_limit);
+                initial_local_limits.max_streams_uni = VarInt::from_u16(local_limit);
+                initial_peer_limits.max_streams_uni = VarInt::from_u16(peer_limit);
 
-            let mut manager = AbstractStreamManager::<MockStream>::new(
-                &limits,
-                endpoint::Type::Server,
-                initial_local_limits,
-                initial_peer_limits,
-            );
-
-            // The peer opens streams up to the limit we have given them
-            for i in 0..*local_limit {
-                let stream_id =
-                    StreamId::nth(endpoint::Type::Client, stream_type, i as u64).unwrap();
-                assert_eq!(
-                    Ok(()),
-                    manager.on_data(&stream_data(stream_id, VarInt::from_u32(0), &[], false))
+                let mut manager = AbstractStreamManager::<MockStream>::new(
+                    &limits,
+                    endpoint::Type::Server,
+                    initial_local_limits,
+                    initial_peer_limits,
                 );
-            }
 
-            let available_outgoing_stream_capacity = manager.with_stream_controller(|cntl| {
-                cntl.available_outgoing_stream_capacity(stream_type)
-            });
+                // The peer opens streams up to the limit we have given them
+                for i in 0..local_limit {
+                    let stream_id =
+                        StreamId::nth(endpoint::Type::Client, stream_type, i as u64).unwrap();
+                    assert_eq!(
+                        Ok(()),
+                        manager.on_data(&stream_data(stream_id, VarInt::from_u32(0), &[], false))
+                    );
+                }
 
-            if stream_type.is_bidirectional() {
-                // The peer opening bidirectional streams uses up the capacity for locally opening streams
-                assert_eq!(VarInt::from_u8(0), available_outgoing_stream_capacity);
-            } else {
-                // The peer opening incoming streams does not affect the capacity for opening outgoing streams
+                let available_outgoing_stream_capacity = manager.with_stream_controller(|cntl| {
+                    cntl.available_local_stream_capacity(stream_type)
+                });
+
+                // Remote initiated streams do NOT use up the capacity for locally initiated streams
+                let available_limit = local_limit.min(peer_limit);
                 assert_eq!(
-                    VarInt::from_u8(*peer_limit),
-                    available_outgoing_stream_capacity
+                    VarInt::from_u16(available_limit),
+                    available_outgoing_stream_capacity,
+                    "local_limit:{} peer_limit:{} stream_type:{:?}",
+                    local_limit,
+                    peer_limit,
+                    stream_type
                 );
             }
         }
