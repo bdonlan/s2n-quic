@@ -46,7 +46,8 @@ enum StreamDirection {
 pub struct Controller {
     local_endpoint_type: endpoint::Type,
     bidi_controller: ControllerPair,
-    uni_controller: ControllerPair,
+    local_uni_controller: LocalInitiated,
+    remote_uni_controller: RemoteInitiated,
 }
 
 impl Controller {
@@ -77,16 +78,13 @@ impl Controller {
                 ),
                 remote_initiated: RemoteInitiated::new(initial_local_limits.max_streams_bidi),
             },
-            uni_controller: ControllerPair {
-                stream_id: StreamId::initial(local_endpoint_type, StreamType::Unidirectional),
-                local_initiated: LocalInitiated::new(
-                    initial_peer_limits.max_streams_uni,
-                    stream_limits
-                        .max_open_local_unidirectional_streams
-                        .as_varint(),
-                ),
-                remote_initiated: RemoteInitiated::new(initial_local_limits.max_streams_uni),
-            },
+            local_uni_controller: LocalInitiated::new(
+                initial_peer_limits.max_streams_uni,
+                stream_limits
+                    .max_open_local_unidirectional_streams
+                    .as_varint(),
+            ),
+            remote_uni_controller: RemoteInitiated::new(initial_local_limits.max_streams_uni),
         }
     }
 
@@ -95,7 +93,7 @@ impl Controller {
     pub fn on_max_streams(&mut self, frame: &MaxStreams) {
         match frame.stream_type {
             StreamType::Bidirectional => self.bidi_controller.local_initiated.on_max_streams(frame),
-            StreamType::Unidirectional => self.uni_controller.local_initiated.on_max_streams(frame),
+            StreamType::Unidirectional => self.local_uni_controller.on_max_streams(frame),
         }
     }
 
@@ -117,8 +115,7 @@ impl Controller {
                 .local_initiated
                 .poll_open_stream(&mut open_tokens.bidirectional, context),
             StreamType::Unidirectional => self
-                .uni_controller
-                .local_initiated
+                .local_uni_controller
                 .poll_open_stream(&mut open_tokens.unidirectional, context),
         }
     }
@@ -133,10 +130,9 @@ impl Controller {
                 .bidi_controller
                 .remote_initiated
                 .on_remote_open_stream(stream_id),
-            StreamType::Unidirectional => self
-                .uni_controller
-                .remote_initiated
-                .on_remote_open_stream(stream_id),
+            StreamType::Unidirectional => {
+                self.remote_uni_controller.on_remote_open_stream(stream_id)
+            }
         }
     }
 
@@ -144,8 +140,8 @@ impl Controller {
     pub fn on_open_stream(&mut self, stream_id: StreamId) {
         match self.direction(stream_id) {
             StreamDirection::Bidirectional => self.bidi_controller.on_open_stream(),
-            StreamDirection::Outgoing => self.uni_controller.local_initiated.on_open_stream(),
-            StreamDirection::Incoming => self.uni_controller.remote_initiated.on_open_stream(),
+            StreamDirection::Outgoing => self.local_uni_controller.on_open_stream(),
+            StreamDirection::Incoming => self.remote_uni_controller.on_open_stream(),
         }
     }
 
@@ -153,8 +149,8 @@ impl Controller {
     pub fn on_close_stream(&mut self, stream_id: StreamId) {
         match self.direction(stream_id) {
             StreamDirection::Bidirectional => self.bidi_controller.on_close_stream(),
-            StreamDirection::Outgoing => self.uni_controller.local_initiated.on_close_stream(),
-            StreamDirection::Incoming => self.uni_controller.remote_initiated.on_close_stream(),
+            StreamDirection::Outgoing => self.local_uni_controller.on_close_stream(),
+            StreamDirection::Incoming => self.remote_uni_controller.on_close_stream(),
         }
     }
 
@@ -162,19 +158,22 @@ impl Controller {
     /// to unblock waiting tasks.
     pub fn close(&mut self) {
         self.bidi_controller.close();
-        self.uni_controller.close();
+        self.local_uni_controller.close();
+        self.remote_uni_controller.close();
     }
 
     /// This method is called when a packet delivery got acknowledged
     pub fn on_packet_ack<A: ack::Set>(&mut self, ack_set: &A) {
         self.bidi_controller.on_packet_ack(ack_set);
-        self.uni_controller.on_packet_ack(ack_set);
+        self.local_uni_controller.on_packet_ack(ack_set);
+        self.remote_uni_controller.on_packet_ack(ack_set);
     }
 
     /// This method is called when a packet loss is reported
     pub fn on_packet_loss<A: ack::Set>(&mut self, ack_set: &A) {
         self.bidi_controller.on_packet_loss(ack_set);
-        self.uni_controller.on_packet_loss(ack_set);
+        self.local_uni_controller.on_packet_loss(ack_set);
+        self.remote_uni_controller.on_packet_loss(ack_set);
     }
 
     /// Updates the period at which `STREAMS_BLOCKED` frames are sent to the peer
@@ -183,8 +182,7 @@ impl Controller {
         self.bidi_controller
             .local_initiated
             .update_sync_period(blocked_sync_period);
-        self.uni_controller
-            .local_initiated
+        self.local_uni_controller
             .update_sync_period(blocked_sync_period);
     }
 
@@ -196,7 +194,11 @@ impl Controller {
         }
 
         self.bidi_controller.on_transmit(context)?;
-        self.uni_controller.on_transmit(context)?;
+        // self.uni_controller.on_transmit(context)?;
+        // Only the stream_type from the StreamId is transmitted
+        let stream_id = StreamId::initial(self.local_endpoint_type, StreamType::Unidirectional);
+        self.remote_uni_controller.on_transmit(stream_id, context)?;
+        self.local_uni_controller.on_transmit(stream_id, context)?;
 
         Ok(())
     }
@@ -204,7 +206,7 @@ impl Controller {
     /// Called when the connection timer expires
     pub fn on_timeout(&mut self, now: Timestamp) {
         self.bidi_controller.on_timeout(now);
-        self.uni_controller.on_timeout(now);
+        self.local_uni_controller.on_timeout(now);
     }
 
     fn direction(&self, stream_id: StreamId) -> StreamDirection {
@@ -222,7 +224,7 @@ impl timer::Provider for Controller {
     #[inline]
     fn timers<Q: timer::Query>(&self, query: &mut Q) -> timer::Result {
         self.bidi_controller.timers(query)?;
-        self.uni_controller.timers(query)?;
+        self.local_uni_controller.timers(query)?;
         Ok(())
     }
 }
@@ -235,7 +237,8 @@ impl transmission::interest::Provider for Controller {
         query: &mut Q,
     ) -> transmission::interest::Result {
         self.bidi_controller.transmission_interest(query)?;
-        self.uni_controller.transmission_interest(query)?;
+        self.remote_uni_controller.transmission_interest(query)?;
+        self.local_uni_controller.transmission_interest(query)?;
         Ok(())
     }
 }
@@ -327,17 +330,14 @@ mod tests {
                     .bidi_controller
                     .local_initiated
                     .available_stream_capacity(),
-                StreamType::Unidirectional => self
-                    .uni_controller
-                    .local_initiated
-                    .available_stream_capacity(),
+                StreamType::Unidirectional => self.local_uni_controller.available_stream_capacity(),
             }
         }
 
         pub fn max_streams_latest_value(&self, stream_type: StreamType) -> VarInt {
             match stream_type {
                 StreamType::Bidirectional => self.bidi_controller.remote_initiated.latest_limit(),
-                StreamType::Unidirectional => self.uni_controller.remote_initiated.latest_limit(),
+                StreamType::Unidirectional => self.remote_uni_controller.latest_limit(),
             }
         }
     }
