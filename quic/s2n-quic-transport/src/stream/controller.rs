@@ -268,17 +268,30 @@ mod tests {
     use s2n_quic_core::varint::VarInt;
 
     impl Controller {
-        pub fn available_local_stream_capacity(&self, stream_type: StreamType) -> VarInt {
+        pub fn available_local_initiated_stream_capacity(&self, stream_type: StreamType) -> VarInt {
             match stream_type {
                 StreamType::Bidirectional => self.local_bidi_controller.available_stream_capacity(),
                 StreamType::Unidirectional => self.local_uni_controller.available_stream_capacity(),
             }
         }
 
-        pub fn max_streams_latest_value(&self, stream_type: StreamType) -> VarInt {
+        pub fn remote_initiated_max_streams_latest_value(&self, stream_type: StreamType) -> VarInt {
             match stream_type {
                 StreamType::Bidirectional => self.remote_bidi_controller.latest_limit(),
                 StreamType::Unidirectional => self.remote_uni_controller.latest_limit(),
+            }
+        }
+
+        pub fn available_remote_intiated_stream_capacity(&self, stream_type: StreamType) -> VarInt {
+            match stream_type {
+                StreamType::Bidirectional => {
+                    self.remote_initiated_max_streams_latest_value(stream_type)
+                        - self.remote_bidi_controller.open_stream_count()
+                }
+                StreamType::Unidirectional => {
+                    self.remote_initiated_max_streams_latest_value(stream_type)
+                        - self.remote_uni_controller.open_stream_count()
+                }
             }
         }
     }
