@@ -297,3 +297,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod fuzz_target;
