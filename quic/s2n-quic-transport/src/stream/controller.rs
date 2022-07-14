@@ -11,6 +11,8 @@ use crate::{
     transmission,
     transmission::{interest::Provider, WriteContext},
 };
+#[cfg(any(feature = "generator", test))]
+use bolero::generator::*;
 use core::{
     task::{Context, Poll},
     time::Duration,
@@ -256,6 +258,8 @@ impl transmission::interest::Provider for Controller {
     }
 }
 
+#[derive(Debug, Copy, Clone)]
+#[cfg_attr(any(feature = "generator", test), derive(TypeGenerator))]
 enum StreamDirection {
     LocalInitiatedBidirectional,
     RemoteInitiatedBidirectional,

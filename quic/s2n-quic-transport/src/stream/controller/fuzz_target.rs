@@ -20,10 +20,39 @@ fn create_default_initial_flow_control_limits() -> InitialFlowControlLimits {
 
 #[derive(Debug, Default)]
 struct Oracle {
-    local_opened_streams: u64,
-    remote_opened_streams: u64,
-    local_closed_streams: u64,
-    remote_closed_streams: u64,
+    opened_local_bidi_streams: u64,
+    closed_local_bidi_streams: u64,
+
+    opened_remote_bidi_streams: u64,
+    closed_remote_bidi_streams: u64,
+
+    opened_local_uni_streams: u64,
+    closed_local_uni_streams: u64,
+
+    opened_remote_uni_streams: u64,
+    closed_remote_uni_streams: u64,
+}
+
+impl Oracle {
+    fn on_open_stream(&mut self, id: u8, stream_direction: StreamDirection) {
+        // TODO open more than 1 stream potentially
+        match stream_direction {
+            StreamDirection::LocalInitiatedBidirectional => self.opened_local_bidi_streams += 1,
+            StreamDirection::RemoteInitiatedBidirectional => self.opened_remote_bidi_streams += 1,
+            StreamDirection::LocalInitiatedUnidirectional => self.opened_local_uni_streams += 1,
+            StreamDirection::RemoteInitiatedUnidirectional => self.opened_remote_uni_streams += 1,
+        }
+    }
+
+    fn on_close_stream(&mut self, id: u8, stream_direction: StreamDirection) {
+        // TODO confirm stream has been opened
+        match stream_direction {
+            StreamDirection::LocalInitiatedBidirectional => self.closed_local_bidi_streams += 1,
+            StreamDirection::RemoteInitiatedBidirectional => self.closed_remote_bidi_streams += 1,
+            StreamDirection::LocalInitiatedUnidirectional => self.closed_local_uni_streams += 1,
+            StreamDirection::RemoteInitiatedUnidirectional => self.closed_remote_uni_streams += 1,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -51,19 +80,49 @@ impl Model {
     }
 
     pub fn apply(&mut self, operation: &Operation) {
-        todo!()
+        match operation {
+            Operation::OpenStream {
+                id,
+                stream_direction,
+            } => self.on_open_stream(*id, *stream_direction),
+            Operation::CloseStream {
+                id,
+                stream_direction,
+            } => self.on_close_stream(*id, *stream_direction),
+        }
     }
 
     /// Check that the subject and oracle match.
     pub fn invariants(&self) {
-        assert!(true);
+        assert!(self.oracle.opened_local_uni_streams >= self.oracle.closed_local_uni_streams);
+        // assert!(self.oracle.opened_local_uni_streams >= self.oracle.closed_local_uni_streams);
+        // assert!(self.oracle.opened_local_uni_streams >= self.oracle.closed_local_uni_streams);
+        // assert!(self.oracle.opened_local_uni_streams >= self.oracle.closed_local_uni_streams);
+    }
+
+    fn on_open_stream(&mut self, id: u8, stream_direction: StreamDirection) {
+        self.oracle.on_open_stream(id, stream_direction);
+        // self.subject.on_open_stream()
+    }
+
+    fn on_close_stream(&mut self, id: u8, stream_direction: StreamDirection) {
+        self.oracle.on_close_stream(id, stream_direction);
+        // self.subject.on_open_stream()
     }
 }
 
 #[derive(Debug, TypeGenerator)]
 enum Operation {
-    OpenStream,
-    CloseStream,
+    OpenStream {
+        #[generator(0..5)]
+        id: u8,
+        stream_direction: StreamDirection,
+    },
+    CloseStream {
+        #[generator(0..5)]
+        id: u8,
+        stream_direction: StreamDirection,
+    },
 }
 
 #[test]
