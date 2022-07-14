@@ -95,9 +95,9 @@ impl Model {
     /// Check that the subject and oracle match.
     pub fn invariants(&self) {
         assert!(self.oracle.opened_local_uni_streams >= self.oracle.closed_local_uni_streams);
-        // assert!(self.oracle.opened_local_uni_streams >= self.oracle.closed_local_uni_streams);
-        // assert!(self.oracle.opened_local_uni_streams >= self.oracle.closed_local_uni_streams);
-        // assert!(self.oracle.opened_local_uni_streams >= self.oracle.closed_local_uni_streams);
+        assert!(self.oracle.opened_local_bidi_streams >= self.oracle.closed_local_bidi_streams);
+        assert!(self.oracle.opened_remote_uni_streams >= self.oracle.closed_remote_uni_streams);
+        assert!(self.oracle.opened_local_bidi_streams >= self.oracle.closed_local_bidi_streams);
     }
 
     fn on_open_stream(&mut self, id: u8, stream_direction: StreamDirection) {
