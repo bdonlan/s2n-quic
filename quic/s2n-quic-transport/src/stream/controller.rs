@@ -19,7 +19,10 @@ use s2n_quic_core::{
     ack, endpoint,
     frame::MaxStreams,
     stream,
-    stream::{StreamId, StreamType},
+    stream::{
+        limits::{LocalBiDirectionalLimit, LocalUniDirectionalLimit},
+        StreamId, StreamType,
+    },
     time::{timer, Timestamp},
     transport,
     transport::parameters::InitialFlowControlLimits,
@@ -36,9 +39,9 @@ pub use remote_initiated::MAX_STREAMS_SYNC_FRACTION;
 #[derive(Debug)]
 pub struct Controller {
     local_endpoint_type: endpoint::Type,
-    local_bidi_controller: LocalInitiated,
+    local_bidi_controller: LocalInitiated<LocalBiDirectionalLimit>,
     remote_bidi_controller: RemoteInitiated,
-    local_uni_controller: LocalInitiated,
+    local_uni_controller: LocalInitiated<LocalUniDirectionalLimit>,
     remote_uni_controller: RemoteInitiated,
 }
 
@@ -64,14 +67,12 @@ impl Controller {
             local_endpoint_type,
             local_bidi_controller: LocalInitiated::new(
                 initial_peer_limits.max_streams_bidi,
-                initial_local_limits.max_streams_bidi,
+                stream_limits.max_open_local_bidirectional_streams,
             ),
             remote_bidi_controller: RemoteInitiated::new(initial_local_limits.max_streams_bidi),
             local_uni_controller: LocalInitiated::new(
                 initial_peer_limits.max_streams_uni,
-                stream_limits
-                    .max_open_local_unidirectional_streams
-                    .as_varint(),
+                stream_limits.max_open_local_unidirectional_streams,
             ),
             remote_uni_controller: RemoteInitiated::new(initial_local_limits.max_streams_uni),
         }
