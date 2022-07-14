@@ -544,6 +544,14 @@ impl<S: StreamTrait> AbstractStreamManager<S> {
             return Err(error).into();
         }
 
+        let local_endpoint_type = self.inner.local_endpoint_type;
+
+        let first_unopened_id = self
+            .inner
+            .next_stream_ids
+            .get_mut(local_endpoint_type, stream_type)
+            .ok_or_else(connection::Error::stream_id_exhausted)?;
+
         //= https://www.rfc-editor.org/rfc/rfc9000#section-4.6
         //# Endpoints MUST NOT exceed the limit set by their peer.
 
@@ -553,19 +561,11 @@ impl<S: StreamTrait> AbstractStreamManager<S> {
         if self
             .inner
             .stream_controller
-            .poll_local_open_stream(stream_type, open_token, context)
+            .poll_local_open_stream(first_unopened_id, open_token, context)
             .is_pending()
         {
             return Poll::Pending;
         }
-
-        let local_endpoint_type = self.inner.local_endpoint_type;
-
-        let first_unopened_id = self
-            .inner
-            .next_stream_ids
-            .get_mut(local_endpoint_type, stream_type)
-            .ok_or_else(connection::Error::stream_id_exhausted)?;
 
         // Increase the next utilized Stream ID
         *self

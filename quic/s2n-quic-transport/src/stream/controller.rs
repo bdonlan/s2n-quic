@@ -97,11 +97,21 @@ impl Controller {
     /// when additional stream capacity becomes available.
     pub fn poll_local_open_stream(
         &mut self,
-        stream_type: StreamType,
+        stream_id: StreamId,
         open_tokens: &mut connection::OpenToken,
         context: &Context,
     ) -> Poll<()> {
-        match stream_type {
+        if cfg!(debug_assertions) {
+            match self.direction(stream_id) {
+                StreamDirection::RemoteInitiatedBidirectional
+                | StreamDirection::RemoteInitiatedUnidirectional => {
+                    panic!("should only be called for locally initiated streams")
+                }
+                _ => (),
+            }
+        }
+
+        match stream_id.stream_type() {
             StreamType::Bidirectional => self
                 .local_bidi_controller
                 .poll_open_stream(&mut open_tokens.bidirectional, context),
@@ -116,6 +126,15 @@ impl Controller {
     /// A `STREAM_LIMIT_ERROR` will be returned if the peer has exceeded the stream limits
     /// that were communicated by transport parameters or MAX_STREAMS frames.
     pub fn on_remote_open_stream(&mut self, stream_id: StreamId) -> Result<(), transport::Error> {
+        if cfg!(debug_assertions) {
+            match self.direction(stream_id) {
+                StreamDirection::LocalInitiatedBidirectional
+                | StreamDirection::LocalInitiatedUnidirectional => {
+                    panic!("should only be called for remote initiated streams")
+                }
+                _ => (),
+            }
+        }
         match stream_id.stream_type() {
             StreamType::Bidirectional => {
                 self.remote_bidi_controller.on_remote_open_stream(stream_id)

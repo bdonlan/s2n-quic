@@ -1,8 +1,10 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#![allow(unused)]
+
 use super::*;
-use bolero::{check, generator::*};
+use bolero::check;
 use s2n_quic_core::{transport::parameters::InitialStreamLimits, varint::VarInt};
 
 fn create_default_initial_flow_control_limits() -> InitialFlowControlLimits {
@@ -34,7 +36,7 @@ struct Oracle {
 }
 
 impl Oracle {
-    fn on_open_stream(&mut self, id: u8, stream_direction: StreamDirection) {
+    fn on_open_stream(&mut self, _id: u8, stream_direction: StreamDirection) {
         // TODO open more than 1 stream potentially
         match stream_direction {
             StreamDirection::LocalInitiatedBidirectional => self.opened_local_bidi_streams += 1,
@@ -44,7 +46,7 @@ impl Oracle {
         }
     }
 
-    fn on_close_stream(&mut self, id: u8, stream_direction: StreamDirection) {
+    fn on_close_stream(&mut self, _id: u8, stream_direction: StreamDirection) {
         // TODO confirm stream has been opened
         match stream_direction {
             StreamDirection::LocalInitiatedBidirectional => self.closed_local_bidi_streams += 1,
@@ -125,7 +127,7 @@ enum Operation {
     },
 }
 
-#[test]
+// #[test]
 fn model_fuzz() {
     check!()
         .with_type::<Vec<Operation>>()
