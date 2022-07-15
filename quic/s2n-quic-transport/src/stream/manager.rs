@@ -205,7 +205,7 @@ impl<S: StreamTrait> StreamManagerState<S> {
     /// This method does not perform any validation whether it is allowed to
     /// open the `Stream`, since the necessary validation depends on which side
     /// opens the `Stream`.
-    fn open_stream(&mut self, stream_id: StreamId) {
+    fn insert_opened_stream(&mut self, stream_id: StreamId) {
         // The receive window is announced by us towards to the peer
         let initial_receive_window = self
             .initial_local_limits
@@ -228,8 +228,6 @@ impl<S: StreamTrait> StreamManagerState<S> {
             initial_receive_window <= VarInt::from_u32(core::u32::MAX),
             "Receive window must not exceed 32bit range"
         );
-
-        self.stream_controller.on_open_stream(stream_id);
 
         self.streams.insert_stream(S::new(StreamConfig {
             incoming_connection_flow_controller: self.incoming_connection_flow_controller.clone(),
@@ -289,7 +287,8 @@ impl<S: StreamTrait> StreamManagerState<S> {
 
                 let mut stream_id_iter = first_unopened_id;
                 while stream_id_iter <= stream_id {
-                    self.open_stream(stream_id_iter);
+                    self.stream_controller.on_open_stream(stream_id);
+                    self.insert_opened_stream(stream_id_iter);
 
                     // The Stream ID can be expected to be valid, since we check upfront
                     // whether the highest stream id (`stream_id`) is still valid,
@@ -330,6 +329,32 @@ impl<S: StreamTrait> StreamManagerState<S> {
         }
 
         Ok(())
+    }
+
+    fn open_local_stream(
+        &mut self,
+        stream_id: StreamId,
+        open_token: &mut connection::OpenToken,
+        context: &Context,
+    ) -> Poll<Result<StreamId, connection::Error>> {
+        //= https://www.rfc-editor.org/rfc/rfc9000#section-4.6
+        //# Endpoints MUST NOT exceed the limit set by their peer.
+
+        //= https://www.rfc-editor.org/rfc/rfc9000#section-19.11
+        //# An endpoint MUST NOT open more streams than permitted by the current
+        //# stream limit set by its peer.
+        if self
+            .stream_controller
+            .poll_local_open_stream(stream_id, open_token, context)
+            .is_pending()
+        {
+            return Poll::Pending;
+        }
+
+        self.stream_controller.on_open_stream(stream_id);
+        self.insert_opened_stream(stream_id);
+
+        Ok(stream_id).into()
     }
 
     fn close(&mut self, error: connection::Error, flush: bool) {
@@ -552,16 +577,9 @@ impl<S: StreamTrait> AbstractStreamManager<S> {
             .get_mut(local_endpoint_type, stream_type)
             .ok_or_else(connection::Error::stream_id_exhausted)?;
 
-        //= https://www.rfc-editor.org/rfc/rfc9000#section-4.6
-        //# Endpoints MUST NOT exceed the limit set by their peer.
-
-        //= https://www.rfc-editor.org/rfc/rfc9000#section-19.11
-        //# An endpoint MUST NOT open more streams than permitted by the current
-        //# stream limit set by its peer.
         if self
             .inner
-            .stream_controller
-            .poll_local_open_stream(first_unopened_id, open_token, context)
+            .open_local_stream(first_unopened_id, open_token, context)
             .is_pending()
         {
             return Poll::Pending;
@@ -572,8 +590,6 @@ impl<S: StreamTrait> AbstractStreamManager<S> {
             .inner
             .next_stream_ids
             .get_mut(local_endpoint_type, stream_type) = first_unopened_id.next_of_type();
-
-        self.inner.open_stream(first_unopened_id);
 
         Ok(first_unopened_id).into()
     }
