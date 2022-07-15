@@ -22,7 +22,7 @@ use s2n_quic_core::{
     frame::MaxStreams,
     stream,
     stream::{
-        limits::{LocalBiDirectionalLimit, LocalUniDirectionalLimit},
+        limits::{LocalBidirectional, LocalUnidirectional},
         StreamId, StreamType,
     },
     time::{timer, Timestamp},
@@ -41,9 +41,9 @@ pub use remote_initiated::MAX_STREAMS_SYNC_FRACTION;
 #[derive(Debug)]
 pub struct Controller {
     local_endpoint_type: endpoint::Type,
-    local_bidi_controller: LocalInitiated<LocalBiDirectionalLimit>,
+    local_bidi_controller: LocalInitiated<LocalBidirectional>,
     remote_bidi_controller: RemoteInitiated,
-    local_uni_controller: LocalInitiated<LocalUniDirectionalLimit>,
+    local_uni_controller: LocalInitiated<LocalUnidirectional>,
     remote_uni_controller: RemoteInitiated,
 }
 
