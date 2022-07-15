@@ -339,22 +339,20 @@ impl<S: StreamTrait> StreamManagerState<S> {
     ) -> Poll<Result<StreamId, connection::Error>> {
         //= https://www.rfc-editor.org/rfc/rfc9000#section-4.6
         //# Endpoints MUST NOT exceed the limit set by their peer.
-
+        //
         //= https://www.rfc-editor.org/rfc/rfc9000#section-19.11
         //# An endpoint MUST NOT open more streams than permitted by the current
         //# stream limit set by its peer.
-        if self
+        match self
             .stream_controller
             .poll_local_open_stream(stream_id, open_token, context)
-            .is_pending()
         {
-            return Poll::Pending;
+            Poll::Ready(stream_id) => {
+                self.insert_opened_stream(stream_id);
+                Poll::Ready(Ok(stream_id))
+            }
+            Poll::Pending => Poll::Pending,
         }
-
-        self.stream_controller.on_open_stream(stream_id);
-        self.insert_opened_stream(stream_id);
-
-        Ok(stream_id).into()
     }
 
     fn close(&mut self, error: connection::Error, flush: bool) {

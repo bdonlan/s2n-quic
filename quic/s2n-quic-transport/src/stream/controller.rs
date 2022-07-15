@@ -100,7 +100,7 @@ impl Controller {
         stream_id: StreamId,
         open_tokens: &mut connection::OpenToken,
         context: &Context,
-    ) -> Poll<()> {
+    ) -> Poll<StreamId> {
         if cfg!(debug_assertions) {
             match self.direction(stream_id) {
                 StreamDirection::RemoteInitiatedBidirectional
@@ -111,13 +111,21 @@ impl Controller {
             }
         }
 
-        match stream_id.stream_type() {
+        let poll = match stream_id.stream_type() {
             StreamType::Bidirectional => self
                 .local_bidi_controller
                 .poll_open_stream(&mut open_tokens.bidirectional, context),
             StreamType::Unidirectional => self
                 .local_uni_controller
                 .poll_open_stream(&mut open_tokens.unidirectional, context),
+        };
+
+        match poll {
+            Poll::Ready(_) => {
+                self.on_open_stream(stream_id);
+                Poll::Ready(stream_id)
+            }
+            Poll::Pending => Poll::Pending,
         }
     }
 
