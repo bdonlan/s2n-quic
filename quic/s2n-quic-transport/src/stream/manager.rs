@@ -29,7 +29,7 @@ use s2n_quic_core::{
         StopSending, StreamDataBlocked, StreamsBlocked,
     },
     packet::number::PacketNumberSpace,
-    stream::{ops, StreamId, StreamType},
+    stream::{ops, StreamId, StreamIter, StreamType},
     time::{timer, Timestamp},
     transport::{self, parameters::InitialFlowControlLimits},
     varint::VarInt,
@@ -276,7 +276,8 @@ impl<S: StreamTrait> StreamManagerState<S> {
                 //# that receives a frame with a stream ID exceeding the limit it has
                 //# sent MUST treat this as a connection error of type
                 //# STREAM_LIMIT_ERROR; see Section 11 for details on error handling.
-                self.stream_controller.on_remote_open_stream(stream_id)?;
+                let stream_iter = StreamIter::new(first_unopened_id, stream_id);
+                self.stream_controller.on_remote_open_stream(stream_iter)?;
 
                 // We must create ALL streams which a lower Stream ID too:
 
@@ -284,18 +285,8 @@ impl<S: StreamTrait> StreamManagerState<S> {
                 //# Before a stream is created, all streams of the same type with lower-
                 //# numbered stream IDs MUST be created.  This ensures that the creation
                 //# order for streams is consistent on both endpoints.
-
-                let mut stream_id_iter = first_unopened_id;
-                while stream_id_iter <= stream_id {
-                    self.stream_controller.on_open_stream(stream_id);
-                    self.insert_opened_stream(stream_id_iter);
-
-                    // The Stream ID can be expected to be valid, since we check upfront
-                    // whether the highest stream id (`stream_id`) is still valid,
-                    // and all IDs we iterate over are lower.
-                    stream_id_iter = stream_id_iter
-                        .next_of_type()
-                        .expect("Expect a valid Stream ID");
+                for stream_id in stream_iter {
+                    self.insert_opened_stream(stream_id);
                 }
 
                 //= https://www.rfc-editor.org/rfc/rfc9000#section-2.1

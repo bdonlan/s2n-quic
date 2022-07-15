@@ -157,6 +157,71 @@ impl StreamId {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct StreamIter {
+    start_stream_id: StreamId,
+    max_stream_id: StreamId,
+    finished: bool,
+}
+
+impl StreamIter {
+    #[inline]
+    pub fn new(start_stream_id: StreamId, max_stream_id: StreamId) -> Self {
+        assert_eq!(start_stream_id.stream_type(), max_stream_id.stream_type());
+        assert_eq!(start_stream_id.initiator(), max_stream_id.initiator());
+        assert!(start_stream_id <= max_stream_id);
+
+        Self {
+            start_stream_id,
+            max_stream_id,
+            finished: false,
+        }
+    }
+
+    #[inline]
+    pub fn max_stream_id(self) -> StreamId {
+        self.max_stream_id
+    }
+}
+
+impl Iterator for StreamIter {
+    type Item = StreamId;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        // short circuit when finised
+        if self.finished {
+            return None;
+        }
+
+        match self.start_stream_id.cmp(&self.max_stream_id) {
+            std::cmp::Ordering::Less => {
+                let ret = self.start_stream_id;
+                // The Stream ID can be expected to be valid, since we check upfront
+                // whether the highest stream id (`stream_id`) is still valid,
+                // and all IDs we iterate over are lower.
+                self.start_stream_id = self
+                    .start_stream_id
+                    .next_of_type()
+                    .expect("Expect a valid Stream ID");
+                Some(ret)
+            }
+            std::cmp::Ordering::Equal => {
+                // avoid incrementing beyond max_stream_id and mark finished
+                // to avoid returning max value again
+                self.finished = true;
+                Some(self.start_stream_id)
+            }
+            std::cmp::Ordering::Greater => {
+                debug_assert!(false, "The `new` method should verify valid ranges");
+
+                // finished
+                self.finished = true;
+                None
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

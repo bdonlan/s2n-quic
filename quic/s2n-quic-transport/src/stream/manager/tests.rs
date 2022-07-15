@@ -661,6 +661,8 @@ fn max_data_replenishes_connection_flow_control_window() {
 #[test]
 fn max_streams_replenishes_stream_control_capacity() {
     let mut manager = create_stream_manager(endpoint::Type::Server);
+    let (waker, _counter) = new_count_waker();
+    let mut token = connection::OpenToken::new();
 
     for stream_type in [StreamType::Bidirectional, StreamType::Unidirectional] {
         let current_max_streams = manager.with_stream_controller(|ctrl| {
@@ -671,12 +673,15 @@ fn max_streams_replenishes_stream_control_capacity() {
         // peer's max streams limit and not the local concurrent stream limit.
         for i in 0..*current_max_streams {
             let stream_id = StreamId::nth(endpoint::Type::Server, stream_type, i).unwrap();
-            manager.with_stream_controller(|ctrl| ctrl.on_open_stream(stream_id));
+            assert!(manager
+                .with_stream_controller(|ctrl| {
+                    ctrl.poll_local_open_stream(stream_id, &mut token, &Context::from_waker(&waker))
+                })
+                .is_ready());
+
             manager.with_stream_controller(|ctrl| ctrl.on_close_stream(stream_id));
         }
 
-        let (waker, _counter) = new_count_waker();
-        let mut token = connection::OpenToken::new();
         assert!(manager
             .poll_open(stream_type, &mut token, &Context::from_waker(&waker))
             .is_pending());
@@ -1178,14 +1183,17 @@ fn stream_limit_error_on_peer_open_stream_too_large() {
             StreamId::nth(endpoint::Type::Client, stream_type, current_max_streams).unwrap();
 
         assert!(manager
-            .with_stream_controller(|ctrl| ctrl.on_remote_open_stream(max_stream_id))
+            .with_stream_controller(
+                |ctrl| ctrl.on_remote_open_stream(StreamIter::new(max_stream_id, max_stream_id))
+            )
             .is_ok());
 
         assert_eq!(
             Err(transport::Error::STREAM_LIMIT_ERROR),
-            manager.with_stream_controller(
-                |ctrl| ctrl.on_remote_open_stream(max_stream_id.next_of_type().unwrap())
-            )
+            manager.with_stream_controller(|ctrl| {
+                let open_id = max_stream_id.next_of_type().unwrap();
+                ctrl.on_remote_open_stream(StreamIter::new(open_id, open_id))
+            })
         );
     }
 }

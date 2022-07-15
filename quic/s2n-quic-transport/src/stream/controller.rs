@@ -20,10 +20,10 @@ use core::{
 use s2n_quic_core::{
     ack, endpoint,
     frame::MaxStreams,
-    stream,
     stream::{
+        self,
         limits::{LocalBidirectional, LocalUnidirectional},
-        StreamId, StreamType,
+        StreamId, StreamIter, StreamType,
     },
     time::{timer, Timestamp},
     transport,
@@ -133,9 +133,12 @@ impl Controller {
     ///
     /// A `STREAM_LIMIT_ERROR` will be returned if the peer has exceeded the stream limits
     /// that were communicated by transport parameters or MAX_STREAMS frames.
-    pub fn on_remote_open_stream(&mut self, stream_id: StreamId) -> Result<(), transport::Error> {
+    pub fn on_remote_open_stream(
+        &mut self,
+        stream_iter: StreamIter,
+    ) -> Result<(), transport::Error> {
         if cfg!(debug_assertions) {
-            match self.direction(stream_id) {
+            match self.direction(stream_iter.max_stream_id()) {
                 StreamDirection::LocalInitiatedBidirectional
                 | StreamDirection::LocalInitiatedUnidirectional => {
                     panic!("should only be called for remote initiated streams")
@@ -143,18 +146,23 @@ impl Controller {
                 _ => (),
             }
         }
-        match stream_id.stream_type() {
-            StreamType::Bidirectional => {
-                self.remote_bidi_controller.on_remote_open_stream(stream_id)
-            }
-            StreamType::Unidirectional => {
-                self.remote_uni_controller.on_remote_open_stream(stream_id)
-            }
+        match stream_iter.max_stream_id().stream_type() {
+            StreamType::Bidirectional => self
+                .remote_bidi_controller
+                .on_remote_open_stream(stream_iter.max_stream_id())?,
+            StreamType::Unidirectional => self
+                .remote_uni_controller
+                .on_remote_open_stream(stream_iter.max_stream_id())?,
         }
+
+        for stream_id in stream_iter {
+            self.on_open_stream(stream_id);
+        }
+        Ok(())
     }
 
     /// This method is called whenever a stream is opened, regardless of which side initiated.
-    pub fn on_open_stream(&mut self, stream_id: StreamId) {
+    fn on_open_stream(&mut self, stream_id: StreamId) {
         match self.direction(stream_id) {
             StreamDirection::LocalInitiatedBidirectional => {
                 self.local_bidi_controller.on_open_stream()
