@@ -72,11 +72,11 @@ impl Iterator for StreamIter {
 }
 
 #[cfg(test)]
-mod tests {
+mod fuzz_target {
     use super::*;
 
     #[test]
-    fn fuzz_stream_iter() {
+    fn fuzz_builder() {
         bolero::check!()
             .with_type::<(StreamId, StreamId)>()
             .cloned()

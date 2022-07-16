@@ -4,7 +4,8 @@
 #![allow(unused)]
 
 use super::*;
-use bolero::check;
+use bolero::{check, generator::*};
+use futures_test::task::new_count_waker;
 use s2n_quic_core::{transport::parameters::InitialStreamLimits, varint::VarInt};
 
 fn create_default_initial_flow_control_limits() -> InitialFlowControlLimits {
@@ -36,24 +37,12 @@ struct Oracle {
 }
 
 impl Oracle {
-    fn on_open_stream(&mut self, _id: u8, stream_direction: StreamDirection) {
+    fn on_open_stream(&mut self, _id: u8) {
         // TODO open more than 1 stream potentially
-        match stream_direction {
-            StreamDirection::LocalInitiatedBidirectional => self.opened_local_bidi_streams += 1,
-            StreamDirection::RemoteInitiatedBidirectional => self.opened_remote_bidi_streams += 1,
-            StreamDirection::LocalInitiatedUnidirectional => self.opened_local_uni_streams += 1,
-            StreamDirection::RemoteInitiatedUnidirectional => self.opened_remote_uni_streams += 1,
-        }
     }
 
-    fn on_close_stream(&mut self, _id: u8, stream_direction: StreamDirection) {
+    fn on_close_stream(&mut self, _id: u8) {
         // TODO confirm stream has been opened
-        match stream_direction {
-            StreamDirection::LocalInitiatedBidirectional => self.closed_local_bidi_streams += 1,
-            StreamDirection::RemoteInitiatedBidirectional => self.closed_remote_bidi_streams += 1,
-            StreamDirection::LocalInitiatedUnidirectional => self.closed_local_uni_streams += 1,
-            StreamDirection::RemoteInitiatedUnidirectional => self.closed_remote_uni_streams += 1,
-        }
     }
 }
 
@@ -83,14 +72,8 @@ impl Model {
 
     pub fn apply(&mut self, operation: &Operation) {
         match operation {
-            Operation::OpenStream {
-                id,
-                stream_direction,
-            } => self.on_open_stream(*id, *stream_direction),
-            Operation::CloseStream {
-                id,
-                stream_direction,
-            } => self.on_close_stream(*id, *stream_direction),
+            Operation::OpenStream { id } => self.on_open_stream(*id),
+            Operation::CloseStream { id } => self.on_close_stream(*id),
         }
     }
 
@@ -102,37 +85,51 @@ impl Model {
         assert!(self.oracle.opened_local_bidi_streams >= self.oracle.closed_local_bidi_streams);
     }
 
-    fn on_open_stream(&mut self, id: u8, stream_direction: StreamDirection) {
-        self.oracle.on_open_stream(id, stream_direction);
-        // self.subject.on_open_stream()
+    fn on_open_stream(&mut self, id: u8) {
+        let stream_id = StreamId::from_varint(VarInt::from_u32(id as u32));
+        self.oracle.on_open_stream(id);
+        let (waker, wake_counter) = new_count_waker();
+        let mut token = connection::OpenToken::new();
+
+        match self.subject.direction(stream_id) {
+            StreamDirection::LocalInitiatedBidirectional
+            | StreamDirection::LocalInitiatedUnidirectional => {
+                self.subject
+                    .poll_open_local_stream(stream_id, &mut token, &Context::from_waker(&waker))
+                    .is_ready();
+            }
+            StreamDirection::RemoteInitiatedBidirectional
+            | StreamDirection::RemoteInitiatedUnidirectional => {
+                let stream_iter = StreamIter::new(stream_id, stream_id);
+                self.subject.on_open_remote_stream(stream_iter).unwrap()
+            }
+        }
     }
 
-    fn on_close_stream(&mut self, id: u8, stream_direction: StreamDirection) {
-        self.oracle.on_close_stream(id, stream_direction);
-        // self.subject.on_open_stream()
+    fn on_close_stream(&mut self, id: u8) {
+        let stream_id = StreamId::from_varint(VarInt::from_u32(id as u32));
+        self.oracle.on_close_stream(id);
+        self.subject.on_close_stream(stream_id);
     }
 }
 
 #[derive(Debug, TypeGenerator)]
 enum Operation {
     OpenStream {
-        #[generator(0..5)]
+        #[generator(0..200)]
         id: u8,
-        stream_direction: StreamDirection,
     },
     CloseStream {
         #[generator(0..5)]
         id: u8,
-        stream_direction: StreamDirection,
     },
 }
 
-// #[test]
-fn model_fuzz() {
+#[test]
+fn model_test() {
     check!()
         .with_type::<Vec<Operation>>()
         .for_each(|operations| {
-            // TODO get these from fuzzing
             let local_endpoint_type = endpoint::Type::Server;
 
             let mut model = Model::new(local_endpoint_type);
