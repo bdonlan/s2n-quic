@@ -277,7 +277,7 @@ impl<S: StreamTrait> StreamManagerState<S> {
                 //# sent MUST treat this as a connection error of type
                 //# STREAM_LIMIT_ERROR; see Section 11 for details on error handling.
                 let stream_iter = StreamIter::new(first_unopened_id, stream_id);
-                self.stream_controller.on_remote_open_stream(stream_iter)?;
+                self.stream_controller.on_open_remote_stream(stream_iter)?;
 
                 // We must create ALL streams which a lower Stream ID too:
 
@@ -336,7 +336,7 @@ impl<S: StreamTrait> StreamManagerState<S> {
         //# stream limit set by its peer.
         match self
             .stream_controller
-            .poll_local_open_stream(stream_id, open_token, context)
+            .poll_open_local_stream(stream_id, open_token, context)
         {
             Poll::Ready(stream_id) => {
                 self.insert_opened_stream(stream_id);

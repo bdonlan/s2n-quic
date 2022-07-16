@@ -96,7 +96,7 @@ impl Controller {
     /// either because of local initiated concurrency limits or the peer's stream limits.
     /// If `Poll::Pending` is returned, the waker in the given `context` will be woken
     /// when additional stream capacity becomes available.
-    pub fn poll_local_open_stream(
+    pub fn poll_open_local_stream(
         &mut self,
         stream_id: StreamId,
         open_tokens: &mut connection::OpenToken,
@@ -134,7 +134,7 @@ impl Controller {
     ///
     /// A `STREAM_LIMIT_ERROR` will be returned if the peer has exceeded the stream limits
     /// that were communicated by transport parameters or MAX_STREAMS frames.
-    pub fn on_remote_open_stream(
+    pub fn on_open_remote_stream(
         &mut self,
         stream_iter: StreamIter,
     ) -> Result<(), transport::Error> {

@@ -675,7 +675,7 @@ fn max_streams_replenishes_stream_control_capacity() {
             let stream_id = StreamId::nth(endpoint::Type::Server, stream_type, i).unwrap();
             assert!(manager
                 .with_stream_controller(|ctrl| {
-                    ctrl.poll_local_open_stream(stream_id, &mut token, &Context::from_waker(&waker))
+                    ctrl.poll_open_local_stream(stream_id, &mut token, &Context::from_waker(&waker))
                 })
                 .is_ready());
 
@@ -1184,7 +1184,7 @@ fn stream_limit_error_on_peer_open_stream_too_large() {
 
         assert!(manager
             .with_stream_controller(
-                |ctrl| ctrl.on_remote_open_stream(StreamIter::new(max_stream_id, max_stream_id))
+                |ctrl| ctrl.on_open_remote_stream(StreamIter::new(max_stream_id, max_stream_id))
             )
             .is_ok());
 
@@ -1192,7 +1192,7 @@ fn stream_limit_error_on_peer_open_stream_too_large() {
             Err(transport::Error::STREAM_LIMIT_ERROR),
             manager.with_stream_controller(|ctrl| {
                 let open_id = max_stream_id.next_of_type().unwrap();
-                ctrl.on_remote_open_stream(StreamIter::new(open_id, open_id))
+                ctrl.on_open_remote_stream(StreamIter::new(open_id, open_id))
             })
         );
     }
