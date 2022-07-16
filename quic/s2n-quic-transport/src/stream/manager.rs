@@ -29,7 +29,7 @@ use s2n_quic_core::{
         StopSending, StreamDataBlocked, StreamsBlocked,
     },
     packet::number::PacketNumberSpace,
-    stream::{ops, StreamId, StreamIter, StreamType},
+    stream::{iter::StreamIter, ops, StreamId, StreamType},
     time::{timer, Timestamp},
     transport::{self, parameters::InitialFlowControlLimits},
     varint::VarInt,

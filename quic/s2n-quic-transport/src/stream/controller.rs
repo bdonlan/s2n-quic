@@ -22,8 +22,9 @@ use s2n_quic_core::{
     frame::MaxStreams,
     stream::{
         self,
+        iter::StreamIter,
         limits::{LocalBidirectional, LocalUnidirectional},
-        StreamId, StreamIter, StreamType,
+        StreamId, StreamType,
     },
     time::{timer, Timestamp},
     transport,
