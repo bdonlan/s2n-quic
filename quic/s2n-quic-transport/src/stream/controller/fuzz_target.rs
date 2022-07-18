@@ -20,8 +20,8 @@ struct Oracle {
     max_remote_bidi_opened_id: Option<u64>,
     max_remote_uni_opened_id: Option<u64>,
 
-    max_local_bidi_opened_id: Option<u64>,
-    max_local_uni_opened_id: Option<u64>,
+    max_local_bidi_opened_nth_idx: Option<u64>,
+    max_local_uni_opened_nth_idx: Option<u64>,
     // opened_local_bidi_streams: u64,
     // closed_local_bidi_streams: u64,
 
@@ -44,13 +44,13 @@ struct Model {
 }
 
 impl Model {
-    fn new(local_endpoint_type: endpoint::Type, limit: u32) -> Self {
-        let mut initial_local_limits = InitialFlowControlLimits::default();
-        let initial_remote_limits = InitialFlowControlLimits::default();
-        let stream_limits = stream::Limits::default();
+    fn new(local_endpoint_type: endpoint::Type, limits: Limits) -> Self {
+        // let mut initial_local_limits = InitialFlowControlLimits::default();
+        // let initial_remote_limits = InitialFlowControlLimits::default();
+        // let stream_limits = stream::Limits::default();
 
-        initial_local_limits.max_streams_bidi = VarInt::from_u32(limit);
-        initial_local_limits.max_streams_uni = VarInt::from_u32(limit);
+        let (initial_local_limits, initial_remote_limits, stream_limits) =
+            limits.as_contoller_limits();
 
         Model {
             oracle: Oracle {
@@ -60,8 +60,8 @@ impl Model {
                 initial_remote_limits,
                 max_remote_bidi_opened_id: None,
                 max_remote_uni_opened_id: None,
-                max_local_bidi_opened_id: None,
-                max_local_uni_opened_id: None,
+                max_local_bidi_opened_nth_idx: None,
+                max_local_uni_opened_nth_idx: None,
             },
             subject: Controller::new(
                 local_endpoint_type,
@@ -85,58 +85,58 @@ impl Model {
     pub fn invariants(&self) {}
 
     fn on_open_local_bidi(&mut self, nth_id: u64) {
-        let (waker, wake_counter) = new_count_waker();
-        let mut token = connection::OpenToken::new();
+        //let (waker, wake_counter) = new_count_waker();
+        //let mut token = connection::OpenToken::new();
 
-        let stream_initiator = self.oracle.local_endpoint_type;
-        let stream_type = StreamType::Unidirectional;
+        //let stream_initiator = self.oracle.local_endpoint_type;
+        //let stream_type = StreamType::Unidirectional;
 
-        let nth_cnt = nth_id + 1;
-        let stream_id = StreamId::nth(stream_initiator, stream_type, nth_id).unwrap();
+        //let nth_cnt = nth_id + 1;
+        //let stream_id = StreamId::nth(stream_initiator, stream_type, nth_id).unwrap();
 
-        //-------------
-        let stream_iter =
-            if let Some(max_local_bidi_opened_id) = self.oracle.max_local_bidi_opened_id {
-                // id already opened.. return
-                if max_local_bidi_opened_id >= nth_id {
-                    return;
-                }
-                let max_opened_stream_id =
-                    StreamId::nth(stream_initiator, stream_type, max_local_bidi_opened_id).unwrap();
+        ////-------------
+        //let stream_iter =
+        //    if let Some(max_local_bidi_opened_id) = self.oracle.max_local_bidi_opened_id {
+        //        // id already opened.. return
+        //        if max_local_bidi_opened_id >= nth_id {
+        //            return;
+        //        }
+        //        let max_opened_stream_id =
+        //            StreamId::nth(stream_initiator, stream_type, max_local_bidi_opened_id).unwrap();
 
-                // next id to open
-                StreamIter::new(max_opened_stream_id.next_of_type().unwrap(), stream_id)
-            } else {
-                let initial = StreamId::initial(stream_initiator, stream_type);
-                StreamIter::new(initial, stream_id)
-            };
+        //        // next id to open
+        //        StreamIter::new(max_opened_stream_id.next_of_type().unwrap(), stream_id)
+        //    } else {
+        //        let initial = StreamId::initial(stream_initiator, stream_type);
+        //        StreamIter::new(initial, stream_id)
+        //    };
 
-        for stream_id in stream_iter {
-            let res = self.subject.poll_open_local_stream(
-                stream_id,
-                &mut token,
-                &Context::from_waker(&waker),
-            );
+        //for stream_id in stream_iter {
+        //    let res = self.subject.poll_open_local_stream(
+        //        stream_id,
+        //        &mut token,
+        //        &Context::from_waker(&waker),
+        //    );
 
-            if nth_cnt
-                > self
-                    .oracle
-                    .initial_remote_limits
-                    .max_streams_bidi
-                    .min(
-                        self.oracle
-                            .stream_limits
-                            .max_open_local_bidirectional_streams
-                            .as_varint(),
-                    )
-                    .as_u64()
-            {
-                assert!(res.is_pending())
-            } else {
-                assert!(res.is_ready());
-                self.oracle.max_local_bidi_opened_id = Some(stream_id.as_varint().as_u64());
-            }
-        }
+        //    if nth_cnt
+        //        > self
+        //            .oracle
+        //            .initial_remote_limits
+        //            .max_streams_bidi
+        //            .min(
+        //                self.oracle
+        //                    .stream_limits
+        //                    .max_open_local_bidirectional_streams
+        //                    .as_varint(),
+        //            )
+        //            .as_u64()
+        //    {
+        //        assert!(res.is_pending())
+        //    } else {
+        //        assert!(res.is_ready());
+        //        self.oracle.max_local_bidi_opened_id = Some(stream_id.as_varint().as_u64());
+        //    }
+        //}
     }
 
     fn on_open_local_uni(&mut self, nth_id: u64) {
@@ -146,50 +146,61 @@ impl Model {
         let stream_initiator = self.oracle.local_endpoint_type;
         let stream_type = StreamType::Unidirectional;
 
-        let nth_cnt = nth_id + 1;
-        let stream_id = StreamId::nth(stream_initiator, stream_type, nth_id).unwrap();
+        let limit = self
+            .oracle
+            .initial_remote_limits
+            .max_streams_uni
+            .min(
+                self.oracle
+                    .stream_limits
+                    .max_open_local_unidirectional_streams
+                    .as_varint(),
+            )
+            .as_u64();
 
         //-------------
-        let stream_iter = if let Some(max_local_uni_opened_id) = self.oracle.max_local_uni_opened_id
-        {
-            // id already opened.. return
-            if max_local_uni_opened_id >= nth_id {
-                return;
-            }
-            let max_opened_stream_id =
-                StreamId::nth(stream_initiator, stream_type, max_local_uni_opened_id).unwrap();
+        // let stream_iter = if let Some(max_local_uni_opened_id) = self.oracle.max_local_uni_opened_id
+        let stream_nth_idx_iter =
+            if let Some(max_local_uni_opened_nth_idx) = self.oracle.max_local_uni_opened_nth_idx {
+                // id already opened.. return
+                if max_local_uni_opened_nth_idx >= nth_id {
+                    return;
+                }
 
-            // next id to open
-            StreamIter::new(max_opened_stream_id.next_of_type().unwrap(), stream_id)
-        } else {
-            let initial = StreamId::initial(stream_initiator, stream_type);
-            StreamIter::new(initial, stream_id)
-        };
+                // +1 to get the next stream to open
+                (max_local_uni_opened_nth_idx + 1..=nth_id)
+            } else {
+                (0..=nth_id)
+            };
 
-        for stream_id in stream_iter {
+        for stream_nth_idx in stream_nth_idx_iter {
+            let nth_cnt = stream_nth_idx + 1;
+            let stream_id = StreamId::nth(stream_initiator, stream_type, stream_nth_idx).unwrap();
+
             let res = self.subject.poll_open_local_stream(
                 stream_id,
                 &mut token,
                 &Context::from_waker(&waker),
             );
 
-            if nth_cnt
-                > self
-                    .oracle
-                    .initial_remote_limits
-                    .max_streams_uni
-                    .min(
-                        self.oracle
-                            .stream_limits
-                            .max_open_local_unidirectional_streams
-                            .as_varint(),
-                    )
-                    .as_u64()
-            {
+            println!(
+                "remlmi: {} applim: {} nth_id: {} iter_nth_id: {} nth_cnt: {} stream_id: {:?}",
+                self.oracle.initial_remote_limits.max_streams_uni,
+                self.oracle
+                    .stream_limits
+                    .max_open_local_unidirectional_streams
+                    .as_varint(),
+                nth_id,
+                stream_nth_idx,
+                nth_cnt,
+                stream_id
+            );
+
+            if nth_cnt > limit {
                 assert!(res.is_pending())
             } else {
                 assert!(res.is_ready());
-                self.oracle.max_local_uni_opened_id = Some(stream_id.as_varint().as_u64());
+                self.oracle.max_local_uni_opened_nth_idx = Some(stream_nth_idx);
             }
         }
     }
@@ -273,56 +284,18 @@ impl Model {
         }
     }
 
-    fn on_close_stream(&mut self, nth_id: u16) {
+    fn on_close_stream(&mut self, nth_id: u8) {
         let stream_id = StreamId::from_varint(VarInt::from_u32(nth_id as u32));
         // self.oracle.on_close_stream(nth_id);
         self.subject.on_close_stream(stream_id);
     }
 }
 
-#[derive(Debug, TypeGenerator)]
-#[allow(clippy::enum_variant_names)]
-enum Operation {
-    // max_local_limit: max_remote_uni_stream (initial_local_limits)
-    // transmit: max_streams
-    OpenRemoteBidi {
-        #[generator(0..200)]
-        nth_id: u16,
-    },
-
-    // max_local_limit: max_remote_uni_stream (initial_local_limits)
-    // transmit: max_streams
-    OpenRemoteUni {
-        #[generator(0..200)]
-        nth_id: u16,
-    },
-
-    // max_local_limit: max_local_bidi_stream
-    // peer_stream_limit: peer_max_bidi_stream (initial_remote_limits)
-    //
-    // limits: max_local_bidi_stream.min(peer_max_bidi_stream)
-    // transmit: streams_blocked
-    OpenLocalBidi {
-        #[generator(0..200)]
-        nth_id: u16,
-    },
-
-    // max_local_limit: max_local_uni_stream
-    // peer_stream_limit: peer_max_uni_stream (initial_remote_limits)
-    //
-    // limits: max_local_uni_stream.min(peer_max_uni_stream)
-    // transmit: streams_blocked
-    OpenLocalUni {
-        #[generator(0..200)]
-        nth_id: u16,
-    },
-}
-
 #[test]
 fn model_test() {
     check!()
-        .with_type::<(u16, Vec<Operation>)>()
-        .for_each(|(limit, operations)| {
+        .with_type::<(Limits, Vec<Operation>)>()
+        .for_each(|(limits, operations)| {
             // let bidi_stream = StreamId::from_u32(512); // client bidi
             // let bidi_stream = StreamId::from_u32(4); // client bidi
             // let bidi_stream = StreamId::from_u32(256); // client bidi
@@ -331,11 +304,98 @@ fn model_test() {
 
             let local_endpoint_type = endpoint::Type::Server;
 
-            let mut model = Model::new(local_endpoint_type, *limit as u32);
+            let mut model = Model::new(local_endpoint_type, *limits);
             for operation in operations.iter() {
                 model.apply(operation);
             }
 
             model.invariants();
         })
+}
+
+#[derive(Debug, TypeGenerator)]
+#[allow(clippy::enum_variant_names)]
+enum Operation {
+    // max_local_limit: max_remote_uni_stream (initial_local_limits)
+    // transmit: max_streams
+    OpenRemoteBidi { nth_id: u8 },
+
+    // max_local_limit: max_remote_uni_stream (initial_local_limits)
+    // transmit: max_streams
+    OpenRemoteUni { nth_id: u8 },
+
+    // max_local_limit: max_local_bidi_stream
+    // peer_stream_limit: peer_max_bidi_stream (initial_remote_limits)
+    //
+    // limits: max_local_bidi_stream.min(peer_max_bidi_stream)
+    // transmit: streams_blocked
+    OpenLocalBidi { nth_id: u8 },
+
+    // max_local_limit: max_local_uni_stream
+    // peer_stream_limit: peer_max_uni_stream (initial_remote_limits)
+    //
+    // limits: max_local_uni_stream.min(peer_max_uni_stream)
+    // transmit: streams_blocked
+    OpenLocalUni { nth_id: u8 },
+}
+
+#[derive(Debug, TypeGenerator, Clone, Copy)]
+struct Limits {
+    // OpenRemoteBidi (initial_local_limits)
+    initial_local_max_remote_bidi: u8,
+
+    // OpenRemoteUni (initial_local_limits)
+    initial_local_max_remote_uni: u8,
+
+    // OpenLocalBidi (initial_remote_limits)
+    //  initial_remote_max_local_bidi.min(app_max_local_bidi)
+    initial_remote_max_local_bidi: u8,
+    app_max_local_bidi: u8,
+
+    // OpenLocalUni (initial_remote_limits)
+    //  initial_remote_max_local_uni.min(app_max_local_uni)
+    initial_remote_max_local_uni: u8,
+    app_max_local_uni: u8,
+}
+
+impl Limits {
+    fn as_contoller_limits(
+        &self,
+    ) -> (
+        InitialFlowControlLimits,
+        InitialFlowControlLimits,
+        stream::Limits,
+    ) {
+        let mut initial_local_limits = InitialFlowControlLimits::default();
+        let mut initial_remote_limits = InitialFlowControlLimits::default();
+        let stream_limits = stream::Limits {
+            max_open_local_unidirectional_streams: (self.app_max_local_uni as u64)
+                .try_into()
+                .unwrap(),
+            max_open_local_bidirectional_streams: (self.app_max_local_bidi as u64)
+                .try_into()
+                .unwrap(),
+            ..Default::default()
+        };
+
+        // OpenRemoteBidi (initial_local_limits)
+        initial_local_limits.max_streams_bidi =
+            VarInt::from_u32(self.initial_local_max_remote_bidi.into());
+
+        // OpenRemoteUni (initial_local_limits)
+        initial_local_limits.max_streams_uni =
+            VarInt::from_u32(self.initial_local_max_remote_uni.into());
+
+        // OpenLocalBidi (initial_remote_limits)
+        //  initial_remote_max_local_bidi.min(app_max_local_bidi)
+        initial_remote_limits.max_streams_bidi =
+            VarInt::from_u32(self.initial_remote_max_local_bidi.into());
+
+        // OpenLocalUni (initial_remote_limits)
+        //  initial_remote_max_local_uni.min(app_max_local_uni)
+        initial_remote_limits.max_streams_uni =
+            VarInt::from_u32(self.initial_remote_max_local_uni.into());
+
+        (initial_local_limits, initial_remote_limits, stream_limits)
+    }
 }

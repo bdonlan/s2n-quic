@@ -8,7 +8,7 @@ use bolero_generator::*;
 #[derive(Debug, Clone, Copy)]
 #[cfg_attr(any(feature = "generator", test), derive(TypeGenerator))]
 pub struct StreamIter {
-    start_stream_id: StreamId,
+    pub start_stream_id: StreamId,
     max_stream_id: StreamId,
     finished: bool,
 }
