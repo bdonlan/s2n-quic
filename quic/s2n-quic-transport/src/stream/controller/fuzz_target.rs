@@ -8,24 +8,14 @@ use bolero::{check, generator::*};
 use futures_test::task::new_count_waker;
 use s2n_quic_core::{transport::parameters::InitialStreamLimits, varint::VarInt};
 
-fn create_default_initial_flow_control_limits() -> InitialFlowControlLimits {
-    InitialFlowControlLimits {
-        stream_limits: InitialStreamLimits {
-            max_data_bidi_local: VarInt::from_u32(4096),
-            max_data_bidi_remote: VarInt::from_u32(4096),
-            max_data_uni: VarInt::from_u32(4096),
-        },
-        max_data: VarInt::from_u32(64 * 1024),
-        max_streams_bidi: VarInt::from_u32(128),
-        max_streams_uni: VarInt::from_u32(128),
-    }
-}
-
 #[derive(Debug)]
 struct Oracle {
     local_endpoint_type: endpoint::Type,
-    uni_limit: u64,
-    bidi_limit: u64,
+    stream_limits: stream::Limits,
+    initial_local_limits: InitialFlowControlLimits,
+    initial_remote_limits: InitialFlowControlLimits,
+
+    max_remote_bidi_opened_id: Option<u64>,
     // opened_local_bidi_streams: u64,
     // closed_local_bidi_streams: u64,
 
@@ -39,15 +29,7 @@ struct Oracle {
     // closed_remote_uni_streams: u64,
 }
 
-impl Oracle {
-    fn on_open_stream(&mut self, _id: u16) {
-        // TODO open more than 1 stream potentially
-    }
-
-    fn on_close_stream(&mut self, _id: u16) {
-        // TODO confirm stream has been opened
-    }
-}
+impl Oracle {}
 
 #[derive(Debug)]
 struct Model {
@@ -56,25 +38,24 @@ struct Model {
 }
 
 impl Model {
-    fn new(local_endpoint_type: endpoint::Type, uni_limit: u64, bidi_limit: u64) -> Self {
-        let initial_local_limits = create_default_initial_flow_control_limits();
-        let initial_peer_limits = create_default_initial_flow_control_limits();
+    fn new(local_endpoint_type: endpoint::Type, limit: u32) -> Self {
+        let mut initial_local_limits = InitialFlowControlLimits::default();
+        let initial_remote_limits = InitialFlowControlLimits::default();
+        let stream_limits = stream::Limits::default();
 
-        let stream_limits = stream::Limits {
-            max_send_buffer_size: 4096.try_into().unwrap(),
-            max_open_local_unidirectional_streams: uni_limit.try_into().unwrap(),
-            max_open_local_bidirectional_streams: bidi_limit.try_into().unwrap(),
-        };
+        initial_local_limits.max_streams_bidi = VarInt::from_u32(limit);
 
         Model {
             oracle: Oracle {
                 local_endpoint_type,
-                uni_limit,
-                bidi_limit,
+                stream_limits,
+                initial_local_limits,
+                initial_remote_limits,
+                max_remote_bidi_opened_id: None,
             },
             subject: Controller::new(
                 local_endpoint_type,
-                initial_peer_limits,
+                initial_remote_limits,
                 initial_local_limits,
                 stream_limits,
             ),
@@ -83,7 +64,7 @@ impl Model {
 
     pub fn apply(&mut self, operation: &Operation) {
         match operation {
-            Operation::OpenStream { id } => self.on_open_stream(*id),
+            Operation::OpenRemoteBidi { nth_id } => self.on_open_remote_bidi(*nth_id as u64),
             // Operation::CloseStream { id } => self.on_close_stream(*id),
         }
     }
@@ -96,62 +77,113 @@ impl Model {
         // assert!(self.oracle.opened_local_bidi_streams >= self.oracle.closed_local_bidi_streams);
     }
 
-    fn on_open_stream(&mut self, id: u16) {
-        let stream_id = StreamId::from_varint(VarInt::from_u32(id as u32));
+    fn on_open_remote_bidi(&mut self, nth_id: u64) {
         let (waker, wake_counter) = new_count_waker();
         let mut token = connection::OpenToken::new();
+        let nth_cnt = nth_id + 1;
+        let stream_id = StreamId::nth(
+            self.oracle.local_endpoint_type.peer_type(),
+            StreamType::Bidirectional,
+            nth_id,
+        )
+        .unwrap();
 
-        self.oracle.on_open_stream(id);
+        // self.oracle.on_remote_bidi(stream_id);
 
-        match self.subject.direction(stream_id) {
-            StreamDirection::LocalInitiatedBidirectional
-            | StreamDirection::LocalInitiatedUnidirectional => {
-                self.subject
-                    .poll_open_local_stream(stream_id, &mut token, &Context::from_waker(&waker))
-                    .is_ready();
-            }
-            StreamDirection::RemoteInitiatedBidirectional
-            | StreamDirection::RemoteInitiatedUnidirectional => {
-                let stream_iter = StreamIter::new(stream_id, stream_id);
-                let res = self.subject.on_open_remote_stream(stream_iter);
-                let nth = stream_id.as_varint().as_u64() / 4;
-                // TODO work on limits stuff
-                if nth > self.oracle.bidi_limit {
-                    res.expect_err("not err");
-                } else {
-                    res.unwrap();
+        let stream_iter =
+            if let Some(max_remote_bidi_opened_id) = self.oracle.max_remote_bidi_opened_id {
+                // id already opened.. return
+                if max_remote_bidi_opened_id >= nth_id {
+                    return;
                 }
-            }
+                let max_opened_stream_id = StreamId::nth(
+                    self.oracle.local_endpoint_type.peer_type(),
+                    StreamType::Bidirectional,
+                    max_remote_bidi_opened_id,
+                )
+                .unwrap();
+
+                // next id to open
+                StreamIter::new(max_opened_stream_id.next_of_type().unwrap(), stream_id)
+            } else {
+                let initial = StreamId::initial(
+                    self.oracle.local_endpoint_type.peer_type(),
+                    StreamType::Bidirectional,
+                );
+                StreamIter::new(initial, stream_id)
+            };
+        self.oracle.max_remote_bidi_opened_id = Some(nth_id);
+
+        let res = self.subject.on_open_remote_stream(stream_iter);
+
+        if nth_cnt > self.oracle.initial_local_limits.max_streams_bidi.as_u64() {
+            res.expect_err("limts violated");
+        } else {
+            res.unwrap();
         }
     }
 
-    fn on_close_stream(&mut self, id: u16) {
-        let stream_id = StreamId::from_varint(VarInt::from_u32(id as u32));
-        self.oracle.on_close_stream(id);
+    fn on_close_stream(&mut self, nth_id: u16) {
+        let stream_id = StreamId::from_varint(VarInt::from_u32(nth_id as u32));
+        // self.oracle.on_close_stream(nth_id);
         self.subject.on_close_stream(stream_id);
     }
 }
 
 #[derive(Debug, TypeGenerator)]
 enum Operation {
-    OpenStream {
-        #[generator(0..1000)]
-        id: u16,
+    // max_local_limit: max_remote_uni_stream (declared locally)
+    // tranmit: max_streams
+    OpenRemoteBidi {
+        #[generator(0..100)]
+        nth_id: u16,
     },
+    // CloseRemoteBidi {
+    //     #[generator(0..100)]
+    //     id: u16,
+    // },
+
     // CloseStream {
     //     #[generator(0..5)]
     //     id: u16,
     // },
 }
 
+// LocalBidirectional
+// max_local_limit: max_local_bidi_stream
+// peer_stream_limit: peer_max_bidi_stream
+//
+// limits: max_local_bidi_stream.min(peer_max_bidi_stream)
+// tranmit: streams_blocked
+
+// LocalUnidirectional
+// max_local_limit: max_local_uni_stream
+// peer_stream_limit: peer_max_uni_stream
+//
+// limits: max_local_uni_stream.min(peer_max_uni_stream)
+// tranmit: streams_blocked
+
+// RemoteBidirectional
+// max_local_limit: max_remote_bidi_stream (declared locally)
+// tranmit: max_streams
+
+// RemoteUnidirectional
+// max_local_limit: max_remote_uni_stream (declared locally)
+// tranmit: max_streams
 #[test]
 fn model_test() {
     check!()
-        .with_type::<(u16, u16, Vec<Operation>)>()
-        .for_each(|(uni, bidi, operations)| {
+        .with_type::<(u16, Vec<Operation>)>()
+        .for_each(|(limit, operations)| {
+            // let bidi_stream = StreamId::from_u32(512); // client bidi
+            // let bidi_stream = StreamId::from_u32(4); // client bidi
+            // let bidi_stream = StreamId::from_u32(256); // client bidi
+            // let bidi_stream = StreamId::from_u32(0); // client bidi
+            // let bidi_stream = StreamId::from_u32(11); // server uni
+
             let local_endpoint_type = endpoint::Type::Server;
 
-            let mut model = Model::new(local_endpoint_type, *uni as u64, *bidi as u64);
+            let mut model = Model::new(local_endpoint_type, *limit as u32);
             for operation in operations.iter() {
                 model.apply(operation);
             }

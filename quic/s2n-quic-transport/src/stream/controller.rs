@@ -90,6 +90,8 @@ impl Controller {
 
     /// This method is called when the local application wishes to open a new stream.
     ///
+    /// This API requires that only one stream is opened per invocation.
+    ///
     /// `Poll::Pending` is returned when there isn't available capacity to open a stream,
     /// either because of local initiated concurrency limits or the peer's stream limits.
     /// If `Poll::Pending` is returned, the waker in the given `context` will be woken
