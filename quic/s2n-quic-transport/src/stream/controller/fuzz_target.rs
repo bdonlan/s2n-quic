@@ -16,6 +16,8 @@ struct Oracle {
     initial_remote_limits: InitialFlowControlLimits,
 
     max_remote_bidi_opened_id: Option<u64>,
+
+    max_remote_uni_opened_id: Option<u64>,
     // opened_local_bidi_streams: u64,
     // closed_local_bidi_streams: u64,
 
@@ -44,6 +46,7 @@ impl Model {
         let stream_limits = stream::Limits::default();
 
         initial_local_limits.max_streams_bidi = VarInt::from_u32(limit);
+        initial_local_limits.max_streams_uni = VarInt::from_u32(limit);
 
         Model {
             oracle: Oracle {
@@ -52,6 +55,7 @@ impl Model {
                 initial_local_limits,
                 initial_remote_limits,
                 max_remote_bidi_opened_id: None,
+                max_remote_uni_opened_id: None,
             },
             subject: Controller::new(
                 local_endpoint_type,
@@ -65,6 +69,7 @@ impl Model {
     pub fn apply(&mut self, operation: &Operation) {
         match operation {
             Operation::OpenRemoteBidi { nth_id } => self.on_open_remote_bidi(*nth_id as u64),
+            Operation::OpenRemoteUni { nth_id } => self.on_open_remote_uni(*nth_id as u64),
             // Operation::CloseStream { id } => self.on_close_stream(*id),
         }
     }
@@ -80,10 +85,14 @@ impl Model {
     fn on_open_remote_bidi(&mut self, nth_id: u64) {
         let (waker, wake_counter) = new_count_waker();
         let mut token = connection::OpenToken::new();
+
+        let stream_initiator = self.oracle.local_endpoint_type.peer_type();
+        let stream_type = StreamType::Bidirectional;
+
         let nth_cnt = nth_id + 1;
         let stream_id = StreamId::nth(
             self.oracle.local_endpoint_type.peer_type(),
-            StreamType::Bidirectional,
+            stream_type,
             nth_id,
         )
         .unwrap();
@@ -98,7 +107,7 @@ impl Model {
                 }
                 let max_opened_stream_id = StreamId::nth(
                     self.oracle.local_endpoint_type.peer_type(),
-                    StreamType::Bidirectional,
+                    stream_type,
                     max_remote_bidi_opened_id,
                 )
                 .unwrap();
@@ -106,10 +115,8 @@ impl Model {
                 // next id to open
                 StreamIter::new(max_opened_stream_id.next_of_type().unwrap(), stream_id)
             } else {
-                let initial = StreamId::initial(
-                    self.oracle.local_endpoint_type.peer_type(),
-                    StreamType::Bidirectional,
-                );
+                let initial =
+                    StreamId::initial(self.oracle.local_endpoint_type.peer_type(), stream_type);
                 StreamIter::new(initial, stream_id)
             };
         self.oracle.max_remote_bidi_opened_id = Some(nth_id);
@@ -117,6 +124,54 @@ impl Model {
         let res = self.subject.on_open_remote_stream(stream_iter);
 
         if nth_cnt > self.oracle.initial_local_limits.max_streams_bidi.as_u64() {
+            res.expect_err("limts violated");
+        } else {
+            res.unwrap();
+        }
+    }
+
+    fn on_open_remote_uni(&mut self, nth_id: u64) {
+        let (waker, wake_counter) = new_count_waker();
+        let mut token = connection::OpenToken::new();
+
+        let stream_initiator = self.oracle.local_endpoint_type.peer_type();
+        let stream_type = StreamType::Unidirectional;
+
+        let nth_cnt = nth_id + 1;
+        let stream_id = StreamId::nth(
+            self.oracle.local_endpoint_type.peer_type(),
+            stream_type,
+            nth_id,
+        )
+        .unwrap();
+
+        // self.oracle.on_remote_uni(stream_id);
+
+        let stream_iter =
+            if let Some(max_remote_uni_opened_id) = self.oracle.max_remote_uni_opened_id {
+                // id already opened.. return
+                if max_remote_uni_opened_id >= nth_id {
+                    return;
+                }
+                let max_opened_stream_id = StreamId::nth(
+                    self.oracle.local_endpoint_type.peer_type(),
+                    stream_type,
+                    max_remote_uni_opened_id,
+                )
+                .unwrap();
+
+                // next id to open
+                StreamIter::new(max_opened_stream_id.next_of_type().unwrap(), stream_id)
+            } else {
+                let initial =
+                    StreamId::initial(self.oracle.local_endpoint_type.peer_type(), stream_type);
+                StreamIter::new(initial, stream_id)
+            };
+        self.oracle.max_remote_uni_opened_id = Some(nth_id);
+
+        let res = self.subject.on_open_remote_stream(stream_iter);
+
+        if nth_cnt > self.oracle.initial_local_limits.max_streams_uni.as_u64() {
             res.expect_err("limts violated");
         } else {
             res.unwrap();
@@ -135,7 +190,7 @@ enum Operation {
     // max_local_limit: max_remote_uni_stream (declared locally)
     // tranmit: max_streams
     OpenRemoteBidi {
-        #[generator(0..100)]
+        #[generator(0..200)]
         nth_id: u16,
     },
     // CloseRemoteBidi {
@@ -143,10 +198,12 @@ enum Operation {
     //     id: u16,
     // },
 
-    // CloseStream {
-    //     #[generator(0..5)]
-    //     id: u16,
-    // },
+    // max_local_limit: max_remote_uni_stream (declared locally)
+    // tranmit: max_streams
+    OpenRemoteUni {
+        #[generator(0..200)]
+        nth_id: u16,
+    },
 }
 
 // LocalBidirectional
