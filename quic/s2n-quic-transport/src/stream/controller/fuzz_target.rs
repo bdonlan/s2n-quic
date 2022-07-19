@@ -216,20 +216,31 @@ impl Model {
 
     /// Check that the subject and oracle match.
     pub fn invariants(&self) {
+        // ---------
         let mut stream_initiator = self.oracle.local_endpoint_type.peer_type();
         let mut stream_type = StreamType::Bidirectional;
+        assert_eq!(
+            self.subject.remote_bidi_controller.open_stream_count(),
+            self.oracle.open_streams(stream_initiator, stream_type)
+        );
         assert_eq!(
             self.subject.remote_bidi_controller.latest_limit().as_u64(),
             self.oracle.limit(stream_initiator, stream_type)
         );
 
+        // ---------
         stream_initiator = self.oracle.local_endpoint_type.peer_type();
         stream_type = StreamType::Unidirectional;
+        assert_eq!(
+            self.subject.remote_uni_controller.open_stream_count(),
+            self.oracle.open_streams(stream_initiator, stream_type)
+        );
         assert_eq!(
             self.subject.remote_uni_controller.latest_limit().as_u64(),
             self.oracle.limit(stream_initiator, stream_type)
         );
 
+        // ---------
         stream_initiator = self.oracle.local_endpoint_type;
         stream_type = StreamType::Bidirectional;
         assert_eq!(
@@ -237,6 +248,7 @@ impl Model {
             self.oracle.open_streams(stream_initiator, stream_type)
         );
 
+        // ---------
         stream_initiator = self.oracle.local_endpoint_type;
         stream_type = StreamType::Unidirectional;
         assert_eq!(
