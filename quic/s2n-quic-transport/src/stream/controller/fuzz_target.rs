@@ -264,6 +264,11 @@ impl Model {
 
         for stream_nth_idx in stream_nth_idx_iter {
             let stream_id = StreamId::nth(stream_initiator, stream_type, stream_nth_idx).unwrap();
+            let can_open = self
+                .subject
+                .local_bidi_controller
+                .available_stream_capacity()
+                > VarInt::from_u8(0);
 
             let res = self.subject.poll_open_local_stream(
                 stream_id,
@@ -271,17 +276,16 @@ impl Model {
                 &Context::from_waker(&waker),
             );
 
-            if !self
-                .oracle
-                .can_open(stream_initiator, stream_type, stream_nth_idx)
-            {
-                assert!(res.is_pending())
-            } else {
+            if can_open {
                 assert!(res.is_ready());
                 self.oracle
                     .on_open_stream(stream_initiator, stream_type, stream_nth_idx);
+            } else {
+                assert!(res.is_pending())
             }
         }
+
+        self.invariants();
     }
 
     fn on_open_local_uni(&mut self, nth_idx: u64) {
@@ -302,6 +306,11 @@ impl Model {
 
         for stream_nth_idx in stream_nth_idx_iter {
             let stream_id = StreamId::nth(stream_initiator, stream_type, stream_nth_idx).unwrap();
+            let can_open = self
+                .subject
+                .local_uni_controller
+                .available_stream_capacity()
+                > VarInt::from_u8(0);
 
             let res = self.subject.poll_open_local_stream(
                 stream_id,
@@ -309,15 +318,16 @@ impl Model {
                 &Context::from_waker(&waker),
             );
 
-            if !self
-                .oracle
-                .can_open(stream_initiator, stream_type, stream_nth_idx)
-            {
-                assert!(res.is_pending())
-            } else {
+            // if self
+            //     .oracle
+            //     .can_open(stream_initiator, stream_type, stream_nth_idx)
+            // {
+            if can_open {
                 assert!(res.is_ready());
                 self.oracle
                     .on_open_stream(stream_initiator, stream_type, stream_nth_idx);
+            } else {
+                assert!(res.is_pending())
             }
         }
     }
@@ -344,14 +354,14 @@ impl Model {
         let stream_iter = StreamIter::new(start_stream, end_stream);
         let res = self.subject.on_open_remote_stream(stream_iter);
 
-        if !self.oracle.can_open(stream_initiator, stream_type, nth_idx) {
-            res.expect_err("limits violated");
-        } else {
+        if self.oracle.can_open(stream_initiator, stream_type, nth_idx) {
             for stream_nth_idx in stream_nth_idx_iter {
                 self.oracle
                     .on_open_stream(stream_initiator, stream_type, stream_nth_idx);
             }
             res.unwrap();
+        } else {
+            res.expect_err("limits violated");
         }
     }
 
@@ -377,14 +387,14 @@ impl Model {
         let stream_iter = StreamIter::new(start_stream, end_stream);
         let res = self.subject.on_open_remote_stream(stream_iter);
 
-        if !self.oracle.can_open(stream_initiator, stream_type, nth_idx) {
-            res.expect_err("limits violated");
-        } else {
+        if self.oracle.can_open(stream_initiator, stream_type, nth_idx) {
             for stream_nth_idx in stream_nth_idx_iter {
                 self.oracle
                     .on_open_stream(stream_initiator, stream_type, stream_nth_idx);
             }
             res.unwrap();
+        } else {
+            res.expect_err("limits violated");
         }
     }
 
@@ -459,22 +469,6 @@ impl Model {
         let stream_id = StreamId::nth(stream_initiator, stream_type, nth_idx).unwrap();
         self.subject.on_close_stream(stream_id);
     }
-}
-
-#[test]
-fn model_test() {
-    check!()
-        .with_type::<(Limits, Vec<Operation>)>()
-        .for_each(|(limits, operations)| {
-            let local_endpoint_type = endpoint::Type::Server;
-
-            let mut model = Model::new(local_endpoint_type, *limits);
-            for operation in operations.iter() {
-                model.apply(operation);
-            }
-
-            model.invariants();
-        })
 }
 
 #[derive(Debug, TypeGenerator)]
@@ -565,4 +559,37 @@ impl Limits {
 
         (initial_local_limits, initial_remote_limits, stream_limits)
     }
+}
+
+#[test]
+fn model_test() {
+    check!()
+        .with_type::<(Limits, Vec<Operation>)>()
+        .for_each(|(limits, operations)| {
+            let local_endpoint_type = endpoint::Type::Server;
+
+            // Input:
+            // (
+            // let limits = Limits {
+            //     initial_local_max_remote_bidi: 0,
+            //     initial_local_max_remote_uni: 0,
+            //     initial_remote_max_local_bidi: 2,
+            //     app_max_local_bidi: 1,
+            //     initial_remote_max_local_uni: 0,
+            //     app_max_local_uni: 0,
+            // };
+            // let operations = vec![
+            //     Operation::OpenLocalBidi { nth_idx: 0 },
+            //     Operation::CloseLocalBidi { nth_idx: 0 },
+            //     Operation::OpenLocalBidi { nth_idx: 1 },
+            // ];
+            // )
+
+            let mut model = Model::new(local_endpoint_type, *limits);
+            for operation in operations.iter() {
+                model.apply(operation);
+            }
+
+            model.invariants();
+        })
 }
