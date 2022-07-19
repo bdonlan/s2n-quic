@@ -28,7 +28,7 @@ struct Oracle {
 }
 
 impl Oracle {
-    fn can_open(
+    fn can_open_remote(
         &self,
         stream_initiator: endpoint::Type,
         stream_type: StreamType,
@@ -366,7 +366,10 @@ impl Model {
         let stream_iter = StreamIter::new(start_stream, end_stream);
         let res = self.subject.on_open_remote_stream(stream_iter);
 
-        if self.oracle.can_open(stream_initiator, stream_type, nth_idx) {
+        if self
+            .oracle
+            .can_open_remote(stream_initiator, stream_type, nth_idx)
+        {
             for stream_nth_idx in stream_nth_idx_iter {
                 self.oracle
                     .on_open_stream(stream_initiator, stream_type, stream_nth_idx);
@@ -399,7 +402,10 @@ impl Model {
         let stream_iter = StreamIter::new(start_stream, end_stream);
         let res = self.subject.on_open_remote_stream(stream_iter);
 
-        if self.oracle.can_open(stream_initiator, stream_type, nth_idx) {
+        if self
+            .oracle
+            .can_open_remote(stream_initiator, stream_type, nth_idx)
+        {
             for stream_nth_idx in stream_nth_idx_iter {
                 self.oracle
                     .on_open_stream(stream_initiator, stream_type, stream_nth_idx);
