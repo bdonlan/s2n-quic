@@ -1,12 +1,14 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+#![allow(unused)]
+
 use std::ops::RangeInclusive;
 
 use super::*;
 use bolero::{check, generator::*};
 use futures_test::task::new_count_waker;
-use roaring::{bitmap, RoaringBitmap};
+use hashbrown::HashSet;
 use s2n_quic_core::{stream::limits::LocalLimits, varint::VarInt};
 
 #[derive(Debug)]
@@ -21,16 +23,20 @@ struct Oracle {
     max_local_bidi_opened_nth_idx: Option<u64>,
     max_local_uni_opened_nth_idx: Option<u64>,
 
-    // remote_uni_open_set: RoaringBitmap,
-    remote_bidi_open_idx_set: RoaringBitmap,
-    remote_uni_open_idx_set: RoaringBitmap,
-    local_bidi_open_idx_set: RoaringBitmap,
-    local_uni_open_idx_set: RoaringBitmap,
+    remote_bidi_open_idx_set: HashSet<u32>,
+    remote_uni_open_idx_set: HashSet<u32>,
+    local_bidi_open_idx_set: HashSet<u32>,
+    local_uni_open_idx_set: HashSet<u32>,
 }
 
 impl Oracle {
-    fn on_open_stream(&mut self, initiator: endpoint::Type, stream_type: StreamType, nth_idx: u64) {
-        match (initiator == self.local_endpoint_type, stream_type) {
+    fn on_open_stream(
+        &mut self,
+        stream_initiator: endpoint::Type,
+        stream_type: StreamType,
+        nth_idx: u64,
+    ) {
+        match (stream_initiator == self.local_endpoint_type, stream_type) {
             (true, StreamType::Bidirectional) => self.max_local_bidi_opened_nth_idx = Some(nth_idx),
             (true, StreamType::Unidirectional) => self.max_local_uni_opened_nth_idx = Some(nth_idx),
             (false, StreamType::Bidirectional) => {
@@ -41,32 +47,28 @@ impl Oracle {
             }
         };
 
-        // match (initiator == self.local_endpoint_type, stream_type) {
-        //     (true, StreamType::Bidirectional) => self.max_local_bidi_opened_nth_idx = Some(nth_idx),
-        //     (true, StreamType::Unidirectional) => self.max_local_uni_opened_nth_idx = Some(nth_idx),
-        //     (false, StreamType::Bidirectional) => {
-        //         self.max_remote_bidi_opened_nth_idx = Some(nth_idx)
-        //     }
-        //     (false, StreamType::Unidirectional) => {
-        //         self.max_remote_uni_opened_nth_idx = Some(nth_idx)
-        //     }
-        // };
-
-        // self.remote_uni_open_set.insert(stream_idx as u32);
+        let nth_idx = nth_idx as u32;
+        match (stream_initiator == self.local_endpoint_type, stream_type) {
+            (true, StreamType::Bidirectional) => self.local_bidi_open_idx_set.insert(nth_idx),
+            (true, StreamType::Unidirectional) => self.local_uni_open_idx_set.insert(nth_idx),
+            (false, StreamType::Bidirectional) => self.remote_bidi_open_idx_set.insert(nth_idx),
+            (false, StreamType::Unidirectional) => self.remote_uni_open_idx_set.insert(nth_idx),
+        };
     }
 
     fn open_stream_range(
         &self,
-        initiator: endpoint::Type,
+        stream_initiator: endpoint::Type,
         stream_type: StreamType,
         nth_idx: u64,
     ) -> Option<RangeInclusive<u64>> {
-        let stream_opened_nth_idx = match (initiator == self.local_endpoint_type, stream_type) {
-            (true, StreamType::Bidirectional) => self.max_local_bidi_opened_nth_idx,
-            (true, StreamType::Unidirectional) => self.max_local_uni_opened_nth_idx,
-            (false, StreamType::Bidirectional) => self.max_remote_bidi_opened_nth_idx,
-            (false, StreamType::Unidirectional) => self.max_remote_uni_opened_nth_idx,
-        };
+        let stream_opened_nth_idx =
+            match (stream_initiator == self.local_endpoint_type, stream_type) {
+                (true, StreamType::Bidirectional) => self.max_local_bidi_opened_nth_idx,
+                (true, StreamType::Unidirectional) => self.max_local_uni_opened_nth_idx,
+                (false, StreamType::Bidirectional) => self.max_remote_bidi_opened_nth_idx,
+                (false, StreamType::Unidirectional) => self.max_remote_uni_opened_nth_idx,
+            };
 
         let stream_nth_idx_iter = if let Some(stream_opened_nth_idx) = stream_opened_nth_idx {
             // idx already opened.. return
@@ -81,6 +83,36 @@ impl Oracle {
         };
 
         Some(stream_nth_idx_iter)
+    }
+
+    fn limit(&self, stream_initiator: endpoint::Type, stream_type: StreamType) -> u64 {
+        match (stream_initiator == self.local_endpoint_type, stream_type) {
+            (true, StreamType::Bidirectional) => self.initial_remote_limits.max_streams_bidi.min(
+                self.stream_limits
+                    .max_open_local_bidirectional_streams
+                    .as_varint(),
+            ),
+            (true, StreamType::Unidirectional) => self.initial_remote_limits.max_streams_uni.min(
+                self.stream_limits
+                    .max_open_local_unidirectional_streams
+                    .as_varint(),
+            ),
+            (false, StreamType::Bidirectional) => self.initial_local_limits.max_streams_bidi,
+            (false, StreamType::Unidirectional) => self.initial_local_limits.max_streams_uni,
+        }
+        .as_u64()
+    }
+
+    fn can_open(
+        &self,
+        stream_initiator: endpoint::Type,
+        stream_type: StreamType,
+        nth_idx: u64,
+    ) -> bool {
+        // the count is +1 since streams are 0-indexed
+        let nth_cnt = nth_idx + 1;
+        let limit = self.limit(stream_initiator, stream_type);
+        nth_cnt <= limit
     }
 }
 
@@ -109,10 +141,10 @@ impl Model {
                 max_remote_uni_opened_nth_idx: None,
                 max_local_bidi_opened_nth_idx: None,
                 max_local_uni_opened_nth_idx: None,
-                remote_bidi_open_idx_set: RoaringBitmap::new(),
-                remote_uni_open_idx_set: RoaringBitmap::new(),
-                local_bidi_open_idx_set: RoaringBitmap::new(),
-                local_uni_open_idx_set: RoaringBitmap::new(),
+                remote_bidi_open_idx_set: HashSet::new(),
+                remote_uni_open_idx_set: HashSet::new(),
+                local_bidi_open_idx_set: HashSet::new(),
+                local_uni_open_idx_set: HashSet::new(),
             },
             subject: Controller::new(
                 local_endpoint_type,
@@ -143,18 +175,6 @@ impl Model {
         let stream_initiator = self.oracle.local_endpoint_type;
         let stream_type = StreamType::Bidirectional;
 
-        let limit = self
-            .oracle
-            .initial_remote_limits
-            .max_streams_bidi
-            .min(
-                self.oracle
-                    .stream_limits
-                    .max_open_local_bidirectional_streams
-                    .as_varint(),
-            )
-            .as_u64();
-
         //-------------
         let stream_nth_idx_iter =
             match self
@@ -166,8 +186,6 @@ impl Model {
             };
 
         for stream_nth_idx in stream_nth_idx_iter {
-            // the count is +1 since streams are 0-indexed
-            let nth_cnt = stream_nth_idx + 1;
             let stream_id = StreamId::nth(stream_initiator, stream_type, stream_nth_idx).unwrap();
 
             let res = self.subject.poll_open_local_stream(
@@ -176,7 +194,10 @@ impl Model {
                 &Context::from_waker(&waker),
             );
 
-            if nth_cnt > limit {
+            if !self
+                .oracle
+                .can_open(stream_initiator, stream_type, stream_nth_idx)
+            {
                 assert!(res.is_pending())
             } else {
                 assert!(res.is_ready());
@@ -192,19 +213,6 @@ impl Model {
 
         let stream_initiator = self.oracle.local_endpoint_type;
         let stream_type = StreamType::Unidirectional;
-
-        let limit = self
-            .oracle
-            .initial_remote_limits
-            .max_streams_uni
-            .min(
-                self.oracle
-                    .stream_limits
-                    .max_open_local_unidirectional_streams
-                    .as_varint(),
-            )
-            .as_u64();
-
         //-------------
         let stream_nth_idx_iter =
             match self
@@ -216,8 +224,6 @@ impl Model {
             };
 
         for stream_nth_idx in stream_nth_idx_iter {
-            // the count is +1 since streams are 0-indexed
-            let nth_cnt = stream_nth_idx + 1;
             let stream_id = StreamId::nth(stream_initiator, stream_type, stream_nth_idx).unwrap();
 
             let res = self.subject.poll_open_local_stream(
@@ -226,7 +232,10 @@ impl Model {
                 &Context::from_waker(&waker),
             );
 
-            if nth_cnt > limit {
+            if !self
+                .oracle
+                .can_open(stream_initiator, stream_type, stream_nth_idx)
+            {
                 assert!(res.is_pending())
             } else {
                 assert!(res.is_ready());
@@ -239,10 +248,6 @@ impl Model {
     fn on_open_remote_bidi(&mut self, nth_idx: u64) {
         let stream_initiator = self.oracle.local_endpoint_type.peer_type();
         let stream_type = StreamType::Bidirectional;
-
-        // the count is +1 since streams are 0-indexed
-        let nth_cnt = nth_idx + 1;
-        let limit = self.oracle.initial_local_limits.max_streams_bidi.as_u64();
 
         //-------------
         let stream_nth_idx_iter =
@@ -262,7 +267,7 @@ impl Model {
         let stream_iter = StreamIter::new(start_stream, end_stream);
         let res = self.subject.on_open_remote_stream(stream_iter);
 
-        if nth_cnt > limit {
+        if !self.oracle.can_open(stream_initiator, stream_type, nth_idx) {
             res.expect_err("limits violated");
         } else {
             for stream_nth_idx in stream_nth_idx_iter {
@@ -277,10 +282,6 @@ impl Model {
         let stream_initiator = self.oracle.local_endpoint_type.peer_type();
         let stream_type = StreamType::Unidirectional;
 
-        // the count is +1 since streams are 0-indexed
-        let nth_cnt = nth_idx + 1;
-        let limit = self.oracle.initial_local_limits.max_streams_uni.as_u64();
-
         //-------------
         let stream_nth_idx_iter =
             match self
@@ -299,7 +300,7 @@ impl Model {
         let stream_iter = StreamIter::new(start_stream, end_stream);
         let res = self.subject.on_open_remote_stream(stream_iter);
 
-        if nth_cnt > limit {
+        if !self.oracle.can_open(stream_initiator, stream_type, nth_idx) {
             res.expect_err("limits violated");
         } else {
             for stream_nth_idx in stream_nth_idx_iter {
@@ -317,7 +318,7 @@ impl Model {
 
         // the count is +1 since streams are 0-indexed
         let nth_cnt = nth_idx + 1;
-        let limit = self.oracle.initial_local_limits.max_streams_uni.as_u64();
+        let limit = self.oracle.limit(stream_initiator, stream_type);
 
         //-------------
         if let Some(max_remote_uni_opened_nth_idx) = self.oracle.max_remote_uni_opened_nth_idx {
