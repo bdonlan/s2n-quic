@@ -1,14 +1,10 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-#![allow(unused)]
-
 use super::*;
 use bolero::{check, generator::*};
 use futures_test::task::new_count_waker;
-use s2n_quic_core::{
-    stream::limits::LocalLimits, transport::parameters::InitialStreamLimits, varint::VarInt,
-};
+use s2n_quic_core::{stream::limits::LocalLimits, varint::VarInt};
 
 #[derive(Debug)]
 struct Oracle {
@@ -85,7 +81,7 @@ impl Model {
     pub fn invariants(&self) {}
 
     fn on_open_local_bidi(&mut self, nth_idx: u64) {
-        let (waker, wake_counter) = new_count_waker();
+        let (waker, _wake_counter) = new_count_waker();
         let mut token = connection::OpenToken::new();
 
         let stream_initiator = self.oracle.local_endpoint_type;
@@ -152,7 +148,7 @@ impl Model {
     }
 
     fn on_open_local_uni(&mut self, nth_idx: u64) {
-        let (waker, wake_counter) = new_count_waker();
+        let (waker, _wake_counter) = new_count_waker();
         let mut token = connection::OpenToken::new();
 
         let stream_initiator = self.oracle.local_endpoint_type;
@@ -179,9 +175,9 @@ impl Model {
                 }
 
                 // +1 to get the next stream to open
-                (max_local_uni_opened_nth_idx + 1..=nth_idx)
+                max_local_uni_opened_nth_idx + 1..=nth_idx
             } else {
-                (0..=nth_idx)
+                0..=nth_idx
             };
 
         for stream_nth_idx in stream_nth_idx_iter {
@@ -218,9 +214,6 @@ impl Model {
     }
 
     fn on_open_remote_bidi(&mut self, nth_idx: u64) {
-        let (waker, wake_counter) = new_count_waker();
-        let mut token = connection::OpenToken::new();
-
         let stream_initiator = self.oracle.local_endpoint_type.peer_type();
         let stream_type = StreamType::Bidirectional;
 
@@ -257,9 +250,6 @@ impl Model {
     }
 
     fn on_open_remote_uni(&mut self, nth_idx: u64) {
-        let (waker, wake_counter) = new_count_waker();
-        let mut token = connection::OpenToken::new();
-
         let stream_initiator = self.oracle.local_endpoint_type.peer_type();
         let stream_type = StreamType::Unidirectional;
 
@@ -294,12 +284,6 @@ impl Model {
             self.oracle.max_remote_uni_opened_nth_idx = Some(nth_idx);
             res.unwrap();
         }
-    }
-
-    fn on_close_stream(&mut self, nth_idx: u8) {
-        let stream_id = StreamId::from_varint(VarInt::from_u32(nth_idx as u32));
-        // self.oracle.on_close_stream(nth_idx);
-        self.subject.on_close_stream(stream_id);
     }
 }
 
