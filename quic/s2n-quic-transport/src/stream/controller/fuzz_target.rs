@@ -18,10 +18,14 @@ struct Oracle {
 
     max_remote_bidi_opened_nth_idx: Option<u64>,
     max_remote_uni_opened_nth_idx: Option<u64>,
-    remote_uni_open_set: RoaringBitmap,
-
     max_local_bidi_opened_nth_idx: Option<u64>,
     max_local_uni_opened_nth_idx: Option<u64>,
+
+    // remote_uni_open_set: RoaringBitmap,
+    remote_bidi_open_idx_set: RoaringBitmap,
+    remote_uni_open_idx_set: RoaringBitmap,
+    local_bidi_open_idx_set: RoaringBitmap,
+    local_uni_open_idx_set: RoaringBitmap,
 }
 
 impl Oracle {
@@ -37,9 +41,18 @@ impl Oracle {
             }
         };
 
-        // for stream_idx in stream_nth_idx_iter {
-        //     self.oracle.remote_uni_open_set.insert(stream_idx as u32);
-        // }
+        // match (initiator == self.local_endpoint_type, stream_type) {
+        //     (true, StreamType::Bidirectional) => self.max_local_bidi_opened_nth_idx = Some(nth_idx),
+        //     (true, StreamType::Unidirectional) => self.max_local_uni_opened_nth_idx = Some(nth_idx),
+        //     (false, StreamType::Bidirectional) => {
+        //         self.max_remote_bidi_opened_nth_idx = Some(nth_idx)
+        //     }
+        //     (false, StreamType::Unidirectional) => {
+        //         self.max_remote_uni_opened_nth_idx = Some(nth_idx)
+        //     }
+        // };
+
+        // self.remote_uni_open_set.insert(stream_idx as u32);
     }
 
     fn open_stream_range(
@@ -94,9 +107,12 @@ impl Model {
                 initial_remote_limits,
                 max_remote_bidi_opened_nth_idx: None,
                 max_remote_uni_opened_nth_idx: None,
-                remote_uni_open_set: RoaringBitmap::new(),
                 max_local_bidi_opened_nth_idx: None,
                 max_local_uni_opened_nth_idx: None,
+                remote_bidi_open_idx_set: RoaringBitmap::new(),
+                remote_uni_open_idx_set: RoaringBitmap::new(),
+                local_bidi_open_idx_set: RoaringBitmap::new(),
+                local_uni_open_idx_set: RoaringBitmap::new(),
             },
             subject: Controller::new(
                 local_endpoint_type,
@@ -160,19 +176,6 @@ impl Model {
                 &Context::from_waker(&waker),
             );
 
-            // println!(
-            //     "remlmi: {} applim: {} nth_idx: {} iter_nth_id: {} nth_cnt: {} stream_id: {:?}",
-            //     self.oracle.initial_remote_limits.max_streams_bidi,
-            //     self.oracle
-            //         .stream_limits
-            //         .max_open_local_bidirectional_streams
-            //         .as_varint(),
-            //     nth_idx,
-            //     stream_nth_idx,
-            //     nth_cnt,
-            //     stream_id
-            // );
-
             if nth_cnt > limit {
                 assert!(res.is_pending())
             } else {
@@ -223,19 +226,6 @@ impl Model {
                 &Context::from_waker(&waker),
             );
 
-            // println!(
-            //     "remlmi: {} applim: {} nth_idx: {} iter_nth_id: {} nth_cnt: {} stream_id: {:?}",
-            //     self.oracle.initial_remote_limits.max_streams_uni,
-            //     self.oracle
-            //         .stream_limits
-            //         .max_open_local_unidirectional_streams
-            //         .as_varint(),
-            //     nth_idx,
-            //     stream_nth_idx,
-            //     nth_cnt,
-            //     stream_id
-            // );
-
             if nth_cnt > limit {
                 assert!(res.is_pending())
             } else {
@@ -275,8 +265,10 @@ impl Model {
         if nth_cnt > limit {
             res.expect_err("limits violated");
         } else {
-            self.oracle
-                .on_open_stream(stream_initiator, stream_type, nth_idx);
+            for stream_nth_idx in stream_nth_idx_iter {
+                self.oracle
+                    .on_open_stream(stream_initiator, stream_type, stream_nth_idx);
+            }
             res.unwrap();
         }
     }
@@ -310,8 +302,10 @@ impl Model {
         if nth_cnt > limit {
             res.expect_err("limits violated");
         } else {
-            self.oracle
-                .on_open_stream(stream_initiator, stream_type, nth_idx);
+            for stream_nth_idx in stream_nth_idx_iter {
+                self.oracle
+                    .on_open_stream(stream_initiator, stream_type, stream_nth_idx);
+            }
             res.unwrap();
         }
     }
