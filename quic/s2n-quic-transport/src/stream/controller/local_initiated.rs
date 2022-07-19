@@ -180,7 +180,7 @@ impl<L: LocalLimits> LocalInitiated<L> {
     }
 
     /// Returns the number of streams currently open
-    fn open_stream_count(&self) -> VarInt {
+    pub(super) fn open_stream_count(&self) -> VarInt {
         self.opened_streams - self.closed_streams
     }
 
