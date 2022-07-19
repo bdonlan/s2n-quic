@@ -6,6 +6,7 @@ use std::ops::RangeInclusive;
 use super::*;
 use bolero::{check, generator::*};
 use futures_test::task::new_count_waker;
+use roaring::{bitmap, RoaringBitmap};
 use s2n_quic_core::{stream::limits::LocalLimits, varint::VarInt};
 
 #[derive(Debug)]
@@ -17,13 +18,31 @@ struct Oracle {
 
     max_remote_bidi_opened_nth_idx: Option<u64>,
     max_remote_uni_opened_nth_idx: Option<u64>,
+    remote_uni_open_set: RoaringBitmap,
 
     max_local_bidi_opened_nth_idx: Option<u64>,
     max_local_uni_opened_nth_idx: Option<u64>,
 }
 
 impl Oracle {
-    fn on_open_stream(
+    fn on_open_stream(&mut self, initiator: endpoint::Type, stream_type: StreamType, nth_idx: u64) {
+        match (initiator == self.local_endpoint_type, stream_type) {
+            (true, StreamType::Bidirectional) => self.max_local_bidi_opened_nth_idx = Some(nth_idx),
+            (true, StreamType::Unidirectional) => self.max_local_uni_opened_nth_idx = Some(nth_idx),
+            (false, StreamType::Bidirectional) => {
+                self.max_remote_bidi_opened_nth_idx = Some(nth_idx)
+            }
+            (false, StreamType::Unidirectional) => {
+                self.max_remote_uni_opened_nth_idx = Some(nth_idx)
+            }
+        };
+
+        // for stream_idx in stream_nth_idx_iter {
+        //     self.oracle.remote_uni_open_set.insert(stream_idx as u32);
+        // }
+    }
+
+    fn open_stream_range(
         &self,
         initiator: endpoint::Type,
         stream_type: StreamType,
@@ -75,6 +94,7 @@ impl Model {
                 initial_remote_limits,
                 max_remote_bidi_opened_nth_idx: None,
                 max_remote_uni_opened_nth_idx: None,
+                remote_uni_open_set: RoaringBitmap::new(),
                 max_local_bidi_opened_nth_idx: None,
                 max_local_uni_opened_nth_idx: None,
             },
@@ -123,7 +143,7 @@ impl Model {
         let stream_nth_idx_iter =
             match self
                 .oracle
-                .on_open_stream(stream_initiator, stream_type, nth_idx)
+                .open_stream_range(stream_initiator, stream_type, nth_idx)
             {
                 Some(val) => val,
                 None => return,
@@ -157,7 +177,8 @@ impl Model {
                 assert!(res.is_pending())
             } else {
                 assert!(res.is_ready());
-                self.oracle.max_local_bidi_opened_nth_idx = Some(stream_nth_idx);
+                self.oracle
+                    .on_open_stream(stream_initiator, stream_type, stream_nth_idx);
             }
         }
     }
@@ -185,7 +206,7 @@ impl Model {
         let stream_nth_idx_iter =
             match self
                 .oracle
-                .on_open_stream(stream_initiator, stream_type, nth_idx)
+                .open_stream_range(stream_initiator, stream_type, nth_idx)
             {
                 Some(val) => val,
                 None => return,
@@ -219,7 +240,8 @@ impl Model {
                 assert!(res.is_pending())
             } else {
                 assert!(res.is_ready());
-                self.oracle.max_local_uni_opened_nth_idx = Some(stream_nth_idx);
+                self.oracle
+                    .on_open_stream(stream_initiator, stream_type, stream_nth_idx);
             }
         }
     }
@@ -236,7 +258,7 @@ impl Model {
         let stream_nth_idx_iter =
             match self
                 .oracle
-                .on_open_stream(stream_initiator, stream_type, nth_idx)
+                .open_stream_range(stream_initiator, stream_type, nth_idx)
             {
                 Some(val) => val,
                 None => return,
@@ -253,7 +275,8 @@ impl Model {
         if nth_cnt > limit {
             res.expect_err("limits violated");
         } else {
-            self.oracle.max_remote_bidi_opened_nth_idx = Some(nth_idx);
+            self.oracle
+                .on_open_stream(stream_initiator, stream_type, nth_idx);
             res.unwrap();
         }
     }
@@ -270,7 +293,7 @@ impl Model {
         let stream_nth_idx_iter =
             match self
                 .oracle
-                .on_open_stream(stream_initiator, stream_type, nth_idx)
+                .open_stream_range(stream_initiator, stream_type, nth_idx)
             {
                 Some(val) => val,
                 None => return,
@@ -287,12 +310,14 @@ impl Model {
         if nth_cnt > limit {
             res.expect_err("limits violated");
         } else {
-            self.oracle.max_remote_uni_opened_nth_idx = Some(nth_idx);
+            self.oracle
+                .on_open_stream(stream_initiator, stream_type, nth_idx);
             res.unwrap();
         }
     }
 
     fn on_close_remote_uni(&mut self, nth_idx: u64) {
+        return;
         let stream_initiator = self.oracle.local_endpoint_type.peer_type();
         let stream_type = StreamType::Unidirectional;
 
@@ -301,32 +326,20 @@ impl Model {
         let limit = self.oracle.initial_local_limits.max_streams_uni.as_u64();
 
         //-------------
-        let stream_nth_idx_iter = if let Some(max_remote_uni_opened_nth_idx) =
-            self.oracle.max_remote_uni_opened_nth_idx
-        {
-            // idx already opened.. return
-            if max_remote_uni_opened_nth_idx >= nth_idx {
+        if let Some(max_remote_uni_opened_nth_idx) = self.oracle.max_remote_uni_opened_nth_idx {
+            if nth_idx > max_remote_uni_opened_nth_idx {
+                // cant close an unopened stream
                 return;
             }
-            max_remote_uni_opened_nth_idx + 1..=nth_idx
         } else {
-            0..=nth_idx
+            // no stream opened yet.. nothing to do
+            return;
         };
 
-        let start_stream =
-            StreamId::nth(stream_initiator, stream_type, *stream_nth_idx_iter.start()).unwrap();
-        let end_stream =
-            StreamId::nth(stream_initiator, stream_type, *stream_nth_idx_iter.end()).unwrap();
+        let stream_id = StreamId::nth(stream_initiator, stream_type, nth_idx).unwrap();
+        self.subject.on_close_stream(stream_id);
 
-        let stream_iter = StreamIter::new(start_stream, end_stream);
-        let res = self.subject.on_open_remote_stream(stream_iter);
-
-        if nth_cnt > limit {
-            res.expect_err("limits violated");
-        } else {
-            self.oracle.max_remote_uni_opened_nth_idx = Some(nth_idx);
-            res.unwrap();
-        }
+        // TODO think the max stream value is higher now
     }
 }
 
@@ -335,12 +348,6 @@ fn model_test() {
     check!()
         .with_type::<(Limits, Vec<Operation>)>()
         .for_each(|(limits, operations)| {
-            // let bidi_stream = StreamId::from_u32(512); // client bidi
-            // let bidi_stream = StreamId::from_u32(4); // client bidi
-            // let bidi_stream = StreamId::from_u32(256); // client bidi
-            // let bidi_stream = StreamId::from_u32(0); // client bidi
-            // let bidi_stream = StreamId::from_u32(11); // server uni
-
             let local_endpoint_type = endpoint::Type::Server;
 
             let mut model = Model::new(local_endpoint_type, *limits);
