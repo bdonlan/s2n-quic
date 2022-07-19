@@ -1,8 +1,6 @@
 // Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-#![allow(unused)]
-
 use std::ops::RangeInclusive;
 
 use super::*;
@@ -39,6 +37,7 @@ impl Oracle {
         // the count is +1 since streams are 0-indexed
         let nth_cnt = nth_idx + 1;
         let limit = self.limit(stream_initiator, stream_type);
+
         nth_cnt <= limit
     }
 
@@ -165,20 +164,6 @@ impl Oracle {
             (false, StreamType::Unidirectional) => self.remote_uni_open_idx_set.len() as u64,
         }
     }
-
-    fn capacity(&self, stream_initiator: endpoint::Type, stream_type: StreamType) -> u64 {
-        let limit = self.limit(stream_initiator, stream_type);
-        let open_stream_count = self.open_streams(stream_initiator, stream_type);
-        match (stream_initiator == self.local_endpoint_type, stream_type) {
-            (true, StreamType::Bidirectional) => (limit - open_stream_count)
-                .min(self.initial_remote_limits.max_streams_bidi.as_u64()),
-            (true, StreamType::Unidirectional) => {
-                (limit - open_stream_count).min(self.initial_remote_limits.max_streams_uni.as_u64())
-            }
-            (false, StreamType::Bidirectional) => limit,
-            (false, StreamType::Unidirectional) => limit,
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -189,10 +174,6 @@ struct Model {
 
 impl Model {
     fn new(local_endpoint_type: endpoint::Type, limits: Limits) -> Self {
-        // let mut initial_local_limits = InitialFlowControlLimits::default();
-        // let initial_remote_limits = InitialFlowControlLimits::default();
-        // let stream_limits = stream::Limits::default();
-
         let (initial_local_limits, initial_remote_limits, stream_limits) =
             limits.as_contoller_limits();
 
@@ -223,55 +204,44 @@ impl Model {
     pub fn apply(&mut self, operation: &Operation) {
         match operation {
             Operation::OpenRemoteBidi { nth_idx } => self.on_open_remote_bidi(*nth_idx as u64),
-            Operation::CloseRemoteBidi { nth_idx } => self.on_close_remote_bidi(*nth_idx as u64),
             Operation::OpenRemoteUni { nth_idx } => self.on_open_remote_uni(*nth_idx as u64),
-            Operation::CloseRemoteUni { nth_idx } => self.on_close_remote_uni(*nth_idx as u64),
             Operation::OpenLocalBidi { nth_idx } => self.on_open_local_bidi(*nth_idx as u64),
-            Operation::CloseLocalBidi { nth_idx } => self.on_close_local_bidi(*nth_idx as u64),
             Operation::OpenLocalUni { nth_idx } => self.on_open_local_uni(*nth_idx as u64),
+            Operation::CloseRemoteBidi { nth_idx } => self.on_close_remote_bidi(*nth_idx as u64),
+            Operation::CloseRemoteUni { nth_idx } => self.on_close_remote_uni(*nth_idx as u64),
+            Operation::CloseLocalBidi { nth_idx } => self.on_close_local_bidi(*nth_idx as u64),
             Operation::CloseLocalUni { nth_idx } => self.on_close_local_uni(*nth_idx as u64),
         }
     }
 
     /// Check that the subject and oracle match.
     pub fn invariants(&self) {
+        let mut stream_initiator = self.oracle.local_endpoint_type.peer_type();
+        let mut stream_type = StreamType::Bidirectional;
         assert_eq!(
             self.subject.remote_bidi_controller.latest_limit().as_u64(),
-            self.oracle.capacity(
-                self.oracle.local_endpoint_type.peer_type(),
-                StreamType::Bidirectional
-            )
+            self.oracle.limit(stream_initiator, stream_type)
         );
+
+        stream_initiator = self.oracle.local_endpoint_type.peer_type();
+        stream_type = StreamType::Unidirectional;
         assert_eq!(
             self.subject.remote_uni_controller.latest_limit().as_u64(),
-            self.oracle.capacity(
-                self.oracle.local_endpoint_type.peer_type(),
-                StreamType::Unidirectional
-            )
+            self.oracle.limit(stream_initiator, stream_type)
         );
 
+        stream_initiator = self.oracle.local_endpoint_type;
+        stream_type = StreamType::Bidirectional;
         assert_eq!(
             self.subject.local_bidi_controller.open_stream_count(),
-            self.oracle.local_bidi_open_idx_set.len()
-        );
-        assert_eq!(
-            self.subject
-                .local_bidi_controller
-                .available_stream_capacity(),
-            self.oracle
-                .capacity(self.oracle.local_endpoint_type, StreamType::Bidirectional)
+            self.oracle.open_streams(stream_initiator, stream_type)
         );
 
+        stream_initiator = self.oracle.local_endpoint_type;
+        stream_type = StreamType::Unidirectional;
         assert_eq!(
             self.subject.local_uni_controller.open_stream_count(),
-            self.oracle.local_uni_open_idx_set.len()
-        );
-        assert_eq!(
-            self.subject
-                .local_uni_controller
-                .available_stream_capacity(),
-            self.oracle
-                .capacity(self.oracle.local_endpoint_type, StreamType::Unidirectional)
+            self.oracle.open_streams(stream_initiator, stream_type)
         );
     }
 
@@ -314,28 +284,6 @@ impl Model {
         }
     }
 
-    fn on_close_local_bidi(&mut self, nth_idx: u64) {
-        let stream_initiator = self.oracle.local_endpoint_type;
-        let stream_type = StreamType::Bidirectional;
-
-        // the count is +1 since streams are 0-indexed
-        let nth_cnt = nth_idx + 1;
-        let limit = self.oracle.limit(stream_initiator, stream_type);
-
-        //-------------
-        if !self
-            .oracle
-            .can_close(stream_initiator, stream_type, nth_idx)
-        {
-            return;
-        }
-
-        self.oracle
-            .on_close_stream(stream_initiator, stream_type, nth_idx);
-        let stream_id = StreamId::nth(stream_initiator, stream_type, nth_idx).unwrap();
-        self.subject.on_close_stream(stream_id);
-    }
-
     fn on_open_local_uni(&mut self, nth_idx: u64) {
         let (waker, _wake_counter) = new_count_waker();
         let mut token = connection::OpenToken::new();
@@ -374,28 +322,6 @@ impl Model {
         }
     }
 
-    fn on_close_local_uni(&mut self, nth_idx: u64) {
-        let stream_initiator = self.oracle.local_endpoint_type;
-        let stream_type = StreamType::Unidirectional;
-
-        // the count is +1 since streams are 0-indexed
-        let nth_cnt = nth_idx + 1;
-        let limit = self.oracle.limit(stream_initiator, stream_type);
-
-        //-------------
-        if !self
-            .oracle
-            .can_close(stream_initiator, stream_type, nth_idx)
-        {
-            return;
-        }
-
-        self.oracle
-            .on_close_stream(stream_initiator, stream_type, nth_idx);
-        let stream_id = StreamId::nth(stream_initiator, stream_type, nth_idx).unwrap();
-        self.subject.on_close_stream(stream_id);
-    }
-
     fn on_open_remote_bidi(&mut self, nth_idx: u64) {
         let stream_initiator = self.oracle.local_endpoint_type.peer_type();
         let stream_type = StreamType::Bidirectional;
@@ -427,28 +353,6 @@ impl Model {
             }
             res.unwrap();
         }
-    }
-
-    fn on_close_remote_bidi(&mut self, nth_idx: u64) {
-        let stream_initiator = self.oracle.local_endpoint_type.peer_type();
-        let stream_type = StreamType::Bidirectional;
-
-        // the count is +1 since streams are 0-indexed
-        let nth_cnt = nth_idx + 1;
-        let limit = self.oracle.limit(stream_initiator, stream_type);
-
-        //-------------
-        if !self
-            .oracle
-            .can_close(stream_initiator, stream_type, nth_idx)
-        {
-            return;
-        }
-
-        self.oracle
-            .on_close_stream(stream_initiator, stream_type, nth_idx);
-        let stream_id = StreamId::nth(stream_initiator, stream_type, nth_idx).unwrap();
-        self.subject.on_close_stream(stream_id);
     }
 
     fn on_open_remote_uni(&mut self, nth_idx: u64) {
@@ -484,13 +388,63 @@ impl Model {
         }
     }
 
+    fn on_close_local_bidi(&mut self, nth_idx: u64) {
+        let stream_initiator = self.oracle.local_endpoint_type;
+        let stream_type = StreamType::Bidirectional;
+
+        //-------------
+        if !self
+            .oracle
+            .can_close(stream_initiator, stream_type, nth_idx)
+        {
+            return;
+        }
+
+        self.oracle
+            .on_close_stream(stream_initiator, stream_type, nth_idx);
+        let stream_id = StreamId::nth(stream_initiator, stream_type, nth_idx).unwrap();
+        self.subject.on_close_stream(stream_id);
+    }
+
+    fn on_close_local_uni(&mut self, nth_idx: u64) {
+        let stream_initiator = self.oracle.local_endpoint_type;
+        let stream_type = StreamType::Unidirectional;
+
+        //-------------
+        if !self
+            .oracle
+            .can_close(stream_initiator, stream_type, nth_idx)
+        {
+            return;
+        }
+
+        self.oracle
+            .on_close_stream(stream_initiator, stream_type, nth_idx);
+        let stream_id = StreamId::nth(stream_initiator, stream_type, nth_idx).unwrap();
+        self.subject.on_close_stream(stream_id);
+    }
+
+    fn on_close_remote_bidi(&mut self, nth_idx: u64) {
+        let stream_initiator = self.oracle.local_endpoint_type.peer_type();
+        let stream_type = StreamType::Bidirectional;
+
+        //-------------
+        if !self
+            .oracle
+            .can_close(stream_initiator, stream_type, nth_idx)
+        {
+            return;
+        }
+
+        self.oracle
+            .on_close_stream(stream_initiator, stream_type, nth_idx);
+        let stream_id = StreamId::nth(stream_initiator, stream_type, nth_idx).unwrap();
+        self.subject.on_close_stream(stream_id);
+    }
+
     fn on_close_remote_uni(&mut self, nth_idx: u64) {
         let stream_initiator = self.oracle.local_endpoint_type.peer_type();
         let stream_type = StreamType::Unidirectional;
-
-        // the count is +1 since streams are 0-indexed
-        let nth_cnt = nth_idx + 1;
-        let limit = self.oracle.limit(stream_initiator, stream_type);
 
         //-------------
         if !self
